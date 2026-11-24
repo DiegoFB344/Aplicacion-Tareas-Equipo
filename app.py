@@ -1,16 +1,15 @@
-
 import os
-import sys
 import io
+import json
 import uuid
 import base64
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from flask import Flask, render_template, request, jsonify
-import webview
+from flask import Flask, render_template, request, jsonify, session, redirect, url_for, send_file
+from werkzeug.middleware.proxy_fix import ProxyFix
 import gspread
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
+from google_auth_oauthlib.flow import Flow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 
@@ -23,18 +22,29 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 
-# Rutas compatibles con desarrollo y ejecutable compilado (PyInstaller)
-BUNDLE_DIR = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
-CLIENT_SECRET_PATH = os.path.join(BUNDLE_DIR, 'client_secret.json')
-ICON_PATH = os.path.join(BUNDLE_DIR, 'logo.ico')
-TOKEN_PATH = os.path.join(os.path.expanduser('~'), '.agenda_proyectos_token.json')
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CLIENT_SECRET_PATH = os.path.join(BASE_DIR, 'client_secret_web.json')
 
-# CONFIGURACIÓN: Pega aquí el ID de tu Google Sheet (entre /d/ y /edit en la URL)
-SPREADSHEET_ID = '1j8yHiDL6fHpwCZTNXVEvQOr-R9oPlXsyueH2ZvmwqHM'
+# CONFIGURACIÓN: Usa variables de entorno en la nube o reemplaza los valores por defecto
+SPREADSHEET_ID = os.environ.get('SPREADSHEET_ID', '1j8yHiDL6fHpwCZTNXVEvQOr-R9oPlXsyueH2ZvmwqHM')
 TZ = ZoneInfo('America/Santiago')
 
-app = Flask(__name__, template_folder=os.path.join(BUNDLE_DIR, 'templates'))
-main_window = None
+app = Flask(
+    __name__,
+    template_folder=os.path.join(BASE_DIR, 'templates'),
+    static_folder=os.path.join(BASE_DIR, 'static')
+)
+app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'cambia-esta-clave-secreta-por-una-larga-2026')
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
+
+# Cookies seguras para HTTPS (Render / PythonAnywhere)
+is_local = os.environ.get('FLASK_ENV') == 'development'
+app.config.update(
+    SESSION_COOKIE_SECURE=not is_local,
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE='Lax',
+    PERMANENT_SESSION_LIFETIME=timedelta(days=30)
+)
 
 SHEETS = {
     'P': 'Proyectos', 'T': 'Tareas', 'U': 'Publicaciones',
@@ -51,91 +61,46 @@ SCOPES = [
     'openid'
 ]
 
-LOGIN_SUCCESS_HTML = """
-<!DOCTYPE html>
-<html lang="es">
-<head>
-  <meta charset="UTF-8">
-  <title>Confirmar Cuenta</title>
-  <style>
-    body{font-family:Arial,sans-serif;background:#f2f5fa;color:#172c47;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
-    .card{background:white;padding:38px;border-radius:16px;text-align:center;box-shadow:0 6px 24px #19345114;max-width:420px}
-    h2{margin:0 0 10px;color:#183153}
-    p{color:#60718c;margin-bottom:22px;line-height:1.5}
-    .btn{display:inline-block;background:#365ccf;color:white;text-decoration:none;padding:12px 24px;border-radius:10px;font-weight:bold;cursor:pointer;border:0;font-size:15px}
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h2>✓ Cuenta verificada</h2>
-    <p>Tu correo de Google se vinculó correctamente. Volviendo a <b>Agenda de Proyectos</b>...</p>
-    <button class="btn" onclick="cerrarPestana()">Cerrar pestaña</button>
-  </div>
-  <script>
-    function cerrarPestana() {
-      window.open('', '_self', '');
-      window.close();
+def create_oauth_flow(redirect_uri, state=None):
+    """Soporta tanto archivo client_secret_web.json como variable de entorno GOOGLE_CLIENT_SECRET_JSON."""
+    env_secret = os.environ.get('GOOGLE_CLIENT_SECRET_JSON')
+    if env_secret:
+        client_config = json.loads(env_secret)
+        return Flow.from_client_config(client_config, scopes=SCOPES, state=state, redirect_uri=redirect_uri)
+    if not os.path.exists(CLIENT_SECRET_PATH):
+        raise FileNotFoundError("Falta client_secret_web.json o la variable GOOGLE_CLIENT_SECRET_JSON")
+    return Flow.from_client_secrets_file(CLIENT_SECRET_PATH, scopes=SCOPES, state=state, redirect_uri=redirect_uri)
+
+def creds_to_dict(creds):
+    return {
+        'token': creds.token,
+        'refresh_token': creds.refresh_token,
+        'token_uri': creds.token_uri,
+        'client_id': creds.client_id,
+        'client_secret': creds.client_secret,
+        'scopes': creds.scopes
     }
-    setTimeout(cerrarPestana, 300);
-  </script>
-</body>
-</html>
-"""
 
-def ask_save_path(default_filename, file_types):
-    """Abre el diálogo nativo de Windows 'Guardar como...' o usa Descargas por defecto."""
-    downloads_dir = os.path.join(os.path.expanduser('~'), 'Downloads')
-    if not os.path.exists(downloads_dir):
-        downloads_dir = os.path.expanduser('~')
-
-    if main_window:
-        try:
-            result = main_window.create_file_dialog(
-                webview.SAVE_DIALOG,
-                directory=downloads_dir,
-                save_filename=default_filename,
-                file_types=file_types
-            )
-            if not result:
-                return None  # El usuario canceló el diálogo
-            return result if isinstance(result, str) else result[0]
-        except Exception:
-            pass
-
-    return os.path.join(downloads_dir, default_filename)
-
-def get_user_credentials(interactive=False):
-    creds = None
-    if os.path.exists(TOKEN_PATH):
-        creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
-
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
+def get_session_credentials():
+    info = session.get('credentials')
+    if not info:
+        return None
+    creds = Credentials(**info)
+    if not creds.valid:
+        if creds.expired and creds.refresh_token:
             try:
                 creds.refresh(Request())
+                session['credentials'] = creds_to_dict(creds)
             except Exception:
-                creds = None
-
-        if not creds:
-            if not interactive:
+                session.pop('credentials', None)
                 return None
-            if not os.path.exists(CLIENT_SECRET_PATH):
-                raise FileNotFoundError(f"Falta client_secret.json en: {CLIENT_SECRET_PATH}")
-            flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRET_PATH, SCOPES)
-            creds = flow.run_local_server(
-                port=0,
-                prompt='select_account',
-                timeout_seconds=90,
-                success_message=LOGIN_SUCCESS_HTML
-            )
-
-        with open(TOKEN_PATH, 'w') as token_file:
-            token_file.write(creds.to_json())
-
+        else:
+            session.pop('credentials', None)
+            return None
     return creds
 
 def get_google_services():
-    creds = get_user_credentials(interactive=False)
+    creds = get_session_credentials()
     if not creds:
         raise PermissionError("AUTH_REQUIRED")
     gc = gspread.authorize(creds)
@@ -188,7 +153,7 @@ def get_shared_calendar_id(sh):
                 return cal_id
     raise ValueError("Configura primero el 'Calendar ID' en la hoja Configuracion.")
 
-def log_action(sh, action, item_id, detail, user_email='App Escritorio'):
+def log_action(sh, action, item_id, detail, user_email='App Web/Móvil'):
     now = datetime.now(TZ).strftime('%Y-%m-%d %H:%M:%S')
     sh.worksheet(SHEETS['L']).append_row([now, action, str(item_id), str(detail), user_email])
 
@@ -264,15 +229,21 @@ def build_agenda_payload(sh):
 
     return {'projects': ps, 'tasks': ts, 'publications': pubs, 'people': people, 'supports': SP, 'states': ST}
 
-# --- RUTAS WEB Y AUTENTICACIÓN ---
+# --- RUTAS PWA ---
+
+@app.route('/sw.js')
+def service_worker():
+    return app.send_static_file('sw.js'), 200, {'Content-Type': 'application/javascript'}
 
 @app.route('/')
 def index():
     return render_template('index.html')
 
+# --- RUTAS OAUTH WEB ---
+
 @app.route('/api/authStatus', methods=['GET'])
 def auth_status():
-    creds = get_user_credentials(interactive=False)
+    creds = get_session_credentials()
     if not creds:
         return jsonify({'authenticated': False})
     try:
@@ -282,29 +253,39 @@ def auth_status():
     except Exception:
         return jsonify({'authenticated': False})
 
-@app.route('/api/login', methods=['POST'])
-def login():
-    try:
-        creds = get_user_credentials(interactive=True)
-        oauth_service = build('oauth2', 'v2', credentials=creds, cache_discovery=False)
-        info = oauth_service.userinfo().get().execute()
+@app.route('/auth/login', methods=['GET'])
+def auth_login():
+    scheme = 'http' if is_local else 'https'
+    redirect_uri = url_for('auth_callback', _external=True, _scheme=scheme)
+    flow = create_oauth_flow(redirect_uri=redirect_uri)
+    authorization_url, state = flow.authorization_url(
+        access_type='offline',
+        include_granted_scopes='true',
+        prompt='select_account'
+    )
+    session['oauth_state'] = state
+    return redirect(authorization_url)
 
-        if main_window:
-            main_window.restore()
-            main_window.on_top = True
-            main_window.on_top = False
+@app.route('/oauth2callback', methods=['GET'])
+def auth_callback():
+    state = session.get('oauth_state')
+    scheme = 'http' if is_local else 'https'
+    redirect_uri = url_for('auth_callback', _external=True, _scheme=scheme)
+    flow = create_oauth_flow(redirect_uri=redirect_uri, state=state)
 
-        return jsonify({'authenticated': True, 'email': info.get('email', '')})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 400
+    auth_response = request.url if is_local else request.url.replace('http://', 'https://')
+    flow.fetch_token(authorization_response=auth_response)
+
+    session.permanent = True
+    session['credentials'] = creds_to_dict(flow.credentials)
+    return redirect('/')
 
 @app.route('/api/logout', methods=['POST'])
 def logout():
-    if os.path.exists(TOKEN_PATH):
-        os.remove(TOKEN_PATH)
+    session.clear()
     return jsonify({'authenticated': False})
 
-# --- EXPORTACIÓN DE GRÁFICOS (PDF Y WORD) ---
+# --- EXPORTACIÓN DE GRÁFICOS (DESCARGA DIRECTA NAVEGADOR / APK) ---
 
 @app.route('/api/exportCharts', methods=['POST'])
 def export_charts():
@@ -318,16 +299,12 @@ def export_charts():
         sh, _, _, user_email = get_google_services()
         now = datetime.now(TZ).strftime('%d-%m-%Y_%H-%M')
         now_readable = datetime.now(TZ).strftime('%d-%m-%Y %H:%M')
+        buf = io.BytesIO()
 
         if fmt == 'pdf':
-            default_name = f"Estadisticas_Proyectos_{now}.pdf"
-            file_path = ask_save_path(default_name, ('Documentos PDF (*.pdf)',))
-            if not file_path:
-                return jsonify({'cancelled': True})
-            if not file_path.lower().endswith('.pdf'):
-                file_path += '.pdf'
-
-            c = canvas.Canvas(file_path, pagesize=letter)
+            filename = f"Estadisticas_Proyectos_{now}.pdf"
+            mimetype = 'application/pdf'
+            c = canvas.Canvas(buf, pagesize=letter)
             width, height = letter
 
             c.setFont("Helvetica-Bold", 18)
@@ -365,13 +342,8 @@ def export_charts():
 
             c.save()
         else:
-            default_name = f"Estadisticas_Proyectos_{now}.docx"
-            file_path = ask_save_path(default_name, ('Documentos Word (*.docx)',))
-            if not file_path:
-                return jsonify({'cancelled': True})
-            if not file_path.lower().endswith('.docx'):
-                file_path += '.docx'
-
+            filename = f"Estadisticas_Proyectos_{now}.docx"
+            mimetype = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
             doc = Document()
             doc.add_heading('REPORTE ESTADÍSTICO DE PROYECTOS', 0)
             doc.add_paragraph(f"Generado: {now_readable} | Por: {user_email}")
@@ -382,14 +354,89 @@ def export_charts():
                 img_bytes = io.BytesIO(base64.b64decode(encoded))
                 doc.add_picture(img_bytes, width=Inches(5.8))
 
-            doc.save(file_path)
+            doc.save(buf)
 
-        if sys.platform.startswith('win'):
-            os.startfile(file_path)
-
-        filename = os.path.basename(file_path)
+        buf.seek(0)
         log_action(sh, f'Exportar gráficos {fmt.upper()}', '', filename, user_email)
-        return jsonify({'filePath': file_path, 'name': filename})
+        return send_file(buf, as_attachment=True, download_name=filename, mimetype=mimetype)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+@app.route('/api/downloadArchivedReport', methods=['GET'])
+def download_archived_report():
+    try:
+        sh, _, _, user_email = get_google_services()
+        projects = [x for x in all_rows(sh, SHEETS['P']) if len(x['v']) > 6 and str(x['v'][6]).upper() == 'TRUE']
+        if not projects:
+            return jsonify({'error': 'No hay proyectos archivados'}), 400
+
+        tasks = all_rows(sh, SHEETS['T'])
+        pubs = all_rows(sh, SHEETS['U'])
+        now = datetime.now(TZ).strftime('%d-%m-%Y_%H-%M')
+        now_readable = datetime.now(TZ).strftime('%d-%m-%Y %H:%M')
+
+        archived_ids = {str(p['v'][0]) for p in projects}
+        archived_tasks = [t for t in tasks if str(t['v'][1]) in archived_ids]
+
+        doc = Document()
+        doc.add_heading('INFORME DE PROYECTOS FINALIZADOS', 0)
+        doc.add_paragraph(f"Generado: {now_readable} | Proyectos archivados: {len(projects)} | Total tareas: {len(archived_tasks)} | Por: {user_email}")
+
+        if archived_tasks:
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4.2))
+            fig.patch.set_facecolor('white')
+
+            resp_counts = {}
+            for t in archived_tasks:
+                name = str(t['v'][5] or 'Sin asignar').split(' ')[0]
+                resp_counts[name] = resp_counts.get(name, 0) + 1
+            ax1.bar(resp_counts.keys(), resp_counts.values(), color='#365ccf')
+            ax1.set_title('Tareas finalizadas por responsable', fontsize=11, fontweight='bold', color='#183153')
+            ax1.yaxis.get_major_locator().set_params(integer=True)
+
+            supp_counts = {}
+            for t in archived_tasks:
+                sp = str(t['v'][3] or 'Otro')
+                supp_counts[sp] = supp_counts.get(sp, 0) + 1
+            ax2.barh(list(supp_counts.keys()), list(supp_counts.values()), color='#22a06b')
+            ax2.set_title('Producción por tipo de soporte', fontsize=11, fontweight='bold', color='#183153')
+            ax2.xaxis.get_major_locator().set_params(integer=True)
+
+            plt.tight_layout()
+            img_buffer = io.BytesIO()
+            plt.savefig(img_buffer, format='png', dpi=150)
+            plt.close(fig)
+            img_buffer.seek(0)
+
+            doc.add_heading('Resumen Estadístico', level=1)
+            doc.add_picture(img_buffer, width=Inches(6.2))
+
+        doc.add_heading('Detalle de Proyectos', level=1)
+        for p in projects:
+            doc.add_heading(str(p['v'][1]), level=2)
+            doc.add_paragraph(f"Prioridad: {p['v'][3]} | Fecha de archivo: {fmt_date(p['v'][7])}")
+            if p['v'][2]:
+                doc.add_paragraph(f"Descripción: {p['v'][2]}")
+
+            own = [t for t in archived_tasks if str(t['v'][1]) == str(p['v'][0])]
+            for t in own:
+                p_task = doc.add_paragraph(style='List Bullet')
+                p_task.add_run(f"{t['v'][2]} ").bold = True
+                p_task.add_run(f"| {t['v'][3]} | Responsable: {t['v'][5]} ({t['v'][6]})")
+                doc.add_paragraph(f"Inicio: {fmt_date(t['v'][7])} | Entrega: {fmt_date(t['v'][8])} | Estado: {t['v'][9]}")
+                if t['v'][4]:
+                    doc.add_paragraph(f"Texto: {t['v'][4]}")
+                tp = [u for u in pubs if str(u['v'][1]) == str(t['v'][0])]
+                if tp:
+                    pub_txt = '; '.join(f"{fmt_date(u['v'][2])} ({'Publicado' if str(u['v'][3]).upper()=='TRUE' else 'No publicado'})" for u in tp)
+                    doc.add_paragraph(f"Publicaciones: {pub_txt}")
+
+        buf = io.BytesIO()
+        doc.save(buf)
+        buf.seek(0)
+        filename = f"Informe_Proyectos_Finalizados_{now}.docx"
+        log_action(sh, 'Generar informe Word', '', filename, user_email)
+        return send_file(buf, as_attachment=True, download_name=filename, mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
     except Exception as e:
         return jsonify({'error': str(e)}), 400
 
@@ -576,84 +623,7 @@ def api_handler(action):
             projects = [x for x in all_rows(sh, SHEETS['P']) if len(x['v']) > 6 and str(x['v'][6]).upper() == 'TRUE']
             if not projects:
                 raise ValueError('Todavía no hay proyectos archivados para informar')
-            tasks = all_rows(sh, SHEETS['T'])
-            pubs = all_rows(sh, SHEETS['U'])
-            now = datetime.now(TZ).strftime('%d-%m-%Y_%H-%M')
-            now_readable = datetime.now(TZ).strftime('%d-%m-%Y %H:%M')
-
-            default_name = f"Informe_Proyectos_Finalizados_{now}.docx"
-            file_path = ask_save_path(default_name, ('Documentos Word (*.docx)',))
-            if not file_path:
-                return jsonify({'cancelled': True})
-            if not file_path.lower().endswith('.docx'):
-                file_path += '.docx'
-
-            archived_ids = {str(p['v'][0]) for p in projects}
-            archived_tasks = [t for t in tasks if str(t['v'][1]) in archived_ids]
-
-            doc = Document()
-            doc.add_heading('INFORME DE PROYECTOS FINALIZADOS', 0)
-            doc.add_paragraph(f"Generado: {now_readable} | Proyectos archivados: {len(projects)} | Total tareas: {len(archived_tasks)} | Por: {user_email}")
-
-            if archived_tasks:
-                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4.2))
-                fig.patch.set_facecolor('white')
-
-                resp_counts = {}
-                for t in archived_tasks:
-                    name = str(t['v'][5] or 'Sin asignar').split(' ')[0]
-                    resp_counts[name] = resp_counts.get(name, 0) + 1
-                ax1.bar(resp_counts.keys(), resp_counts.values(), color='#365ccf')
-                ax1.set_title('Tareas finalizadas por responsable', fontsize=11, fontweight='bold', color='#183153')
-                ax1.yaxis.get_major_locator().set_params(integer=True)
-                ax1.grid(axis='y', linestyle='--', alpha=0.4)
-
-                supp_counts = {}
-                for t in archived_tasks:
-                    sp = str(t['v'][3] or 'Otro')
-                    supp_counts[sp] = supp_counts.get(sp, 0) + 1
-                ax2.barh(list(supp_counts.keys()), list(supp_counts.values()), color='#22a06b')
-                ax2.set_title('Producción por tipo de soporte', fontsize=11, fontweight='bold', color='#183153')
-                ax2.xaxis.get_major_locator().set_params(integer=True)
-                ax2.grid(axis='x', linestyle='--', alpha=0.4)
-
-                plt.tight_layout()
-                img_buffer = io.BytesIO()
-                plt.savefig(img_buffer, format='png', dpi=150)
-                plt.close(fig)
-                img_buffer.seek(0)
-
-                doc.add_heading('Resumen Estadístico', level=1)
-                doc.add_picture(img_buffer, width=Inches(6.2))
-
-            doc.add_heading('Detalle de Proyectos', level=1)
-            for p in projects:
-                doc.add_heading(str(p['v'][1]), level=2)
-                doc.add_paragraph(f"Prioridad: {p['v'][3]} | Fecha de archivo: {fmt_date(p['v'][7])}")
-                if p['v'][2]:
-                    doc.add_paragraph(f"Descripción: {p['v'][2]}")
-
-                own = [t for t in archived_tasks if str(t['v'][1]) == str(p['v'][0])]
-                for t in own:
-                    p_task = doc.add_paragraph(style='List Bullet')
-                    p_task.add_run(f"{t['v'][2]} ").bold = True
-                    p_task.add_run(f"| {t['v'][3]} | Responsable: {t['v'][5]} ({t['v'][6]})")
-                    doc.add_paragraph(f"Inicio: {fmt_date(t['v'][7])} | Entrega: {fmt_date(t['v'][8])} | Estado: {t['v'][9]}")
-                    if t['v'][4]:
-                        doc.add_paragraph(f"Texto: {t['v'][4]}")
-                    tp = [u for u in pubs if str(u['v'][1]) == str(t['v'][0])]
-                    if tp:
-                        pub_txt = '; '.join(f"{fmt_date(u['v'][2])} ({'Publicado' if str(u['v'][3]).upper()=='TRUE' else 'No publicado'})" for u in tp)
-                        doc.add_paragraph(f"Publicaciones: {pub_txt}")
-
-            doc.save(file_path)
-
-            if sys.platform.startswith('win'):
-                os.startfile(file_path)
-
-            filename = os.path.basename(file_path)
-            log_action(sh, 'Generar informe Word', '', filename, user_email)
-            return jsonify({'filePath': file_path, 'name': filename, 'count': len(projects)})
+            return jsonify({'downloadUrl': '/api/downloadArchivedReport', 'count': len(projects)})
 
         return jsonify(build_agenda_payload(sh))
 
@@ -662,11 +632,6 @@ def api_handler(action):
     except Exception as e:
         return jsonify({'error': str(e)}), 400
 
-def on_closed():
-    os._exit(0)
-
 if __name__ == '__main__':
-    main_window = webview.create_window('Agenda de Proyectos', app, width=1400, height=860)
-    main_window.events.closed += on_closed
-    webview.start(icon=ICON_PATH if os.path.exists(ICON_PATH) else None)
-    os._exit(0)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
