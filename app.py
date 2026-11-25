@@ -229,6 +229,28 @@ def build_agenda_payload(sh):
 
     return {'projects': ps, 'tasks': ts, 'publications': pubs, 'people': people, 'supports': SP, 'states': ST}
 
+@app.route('/static/icon-512.png')
+def pwa_icon():
+    from PIL import Image, ImageDraw
+    icon_file = os.path.join(BASE_DIR, 'static', '512.png')
+    if os.path.exists(icon_file):
+        return send_file(icon_file, mimetype='image/png')
+
+    ico_path = os.path.join(BASE_DIR, 'logo.ico')
+    if os.path.exists(ico_path):
+        img = Image.open(ico_path).convert('RGBA').resize((512, 512))
+    else:
+        img = Image.new('RGBA', (512, 512), (54, 92, 207, 255))
+        draw = ImageDraw.Draw(img)
+        draw.rounded_rectangle([96, 96, 416, 416], radius=64, fill=(255, 255, 255, 255))
+        draw.rectangle([150, 175, 362, 205], fill=(54, 92, 207, 255))
+        draw.rectangle([150, 240, 362, 270], fill=(54, 92, 207, 255))
+        draw.rectangle([150, 305, 290, 335], fill=(34, 160, 107, 255))
+
+    buf = io.BytesIO()
+    img.save(buf, format='PNG')
+    buf.seek(0)
+    return send_file(buf, mimetype='image/png')
 # --- RUTAS PWA ---
 
 @app.route('/sw.js')
