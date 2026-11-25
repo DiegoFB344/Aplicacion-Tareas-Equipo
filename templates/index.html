@@ -2,12 +2,22 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <meta name="theme-color" content="#365ccf">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>Agenda de proyectos</title>
+  <link rel="manifest" href="/static/manifest.json">
+  <link rel="icon" type="image/png" href="/static/icon-512.png">
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js');
+    }
+  </script>
   <style>
     :root{font-family:Arial,sans-serif;color:#172c47;background:#f2f5fa}
-    *{box-sizing:border-box}
+    *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
     body{margin:0}
     .wrap{max-width:1550px;margin:30px auto;padding:0 22px}
     header,.toolbar,.actions,.between{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
@@ -15,9 +25,9 @@
     h1{font-size:29px;margin:0 0 8px}
     h2{margin:0 0 18px}
     p{color:#60718c}
-    button{border:0;border-radius:10px;background:#365ccf;color:white;padding:10px 15px;cursor:pointer;font-size:14px}
+    button{border:0;border-radius:10px;background:#365ccf;color:white;padding:10px 15px;cursor:pointer;font-size:14px;font-weight:600}
     button.secondary{background:#e9eef8;color:#183153}
-    button:disabled{opacity:.4;cursor:not-allowed}
+    button:disabled{opacity:.45;cursor:not-allowed}
     .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:28px 0}
     .stat,.panel{background:white;border-radius:16px;padding:22px;box-shadow:0 4px 18px #1934510b}
     .stat b{font-size:27px;display:block;margin-top:10px}
@@ -37,20 +47,20 @@
     tr.priority-Alta{background:#fff0f0}
     tr.priority-Media{background:#fff9df}
     tr.priority-Baja{background:#edfaef}
-    .tag{display:inline-block;background:#eaf0fb;padding:7px 10px;border-radius:20px}
+    .tag{display:inline-block;background:#eaf0fb;padding:7px 10px;border-radius:20px;font-weight:600}
     .progress{background:#e4e9f1;height:7px;border-radius:6px;margin-top:7px;width:105px}
     .bar{height:7px;background:#365ccf;border-radius:6px}
     .step{padding:7px 11px;margin-right:5px}
     .pub{display:flex;align-items:center;gap:8px;margin:5px 0;white-space:nowrap}
     .pub input{width:auto}
     .pub button{padding:4px 7px;font-size:11px}
-    .modal{position:fixed;inset:0;background:#12213b88;display:none;align-items:center;justify-content:center;padding:15px;z-index:3}
+    .modal{position:fixed;inset:0;background:#12213b88;display:none;align-items:center;justify-content:center;padding:15px;z-index:20}
     .modal.show{display:flex}
     .dialog{background:white;border-radius:16px;padding:25px;width:min(690px,100%);max-height:92vh;overflow:auto}
     .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
     .full{grid-column:1/-1}
     .muted{font-size:12px;color:#73829b}
-    .toast{position:fixed;bottom:20px;right:20px;background:#183153;color:white;padding:13px 18px;border-radius:10px;display:none;z-index:30}
+    .toast{position:fixed;bottom:20px;right:20px;left:20px;max-width:420px;margin:0 auto;background:#183153;color:white;padding:13px 18px;border-radius:10px;display:none;z-index:30;text-align:center;box-shadow:0 6px 20px #00000033}
     .empty{padding:40px;text-align:center;color:#7b8ba0}
     .archiveitem{padding:12px;border-bottom:1px solid #e7ebf1}
 
@@ -76,10 +86,10 @@
     .btn-logout{background:none;color:#b12727;padding:2px 6px;font-size:12px;font-weight:600}
 
     /* Pantalla de Login */
-    .login-screen{position:fixed;inset:0;background:#f2f5fa;display:none;align-items:center;justify-content:center;z-index:20;padding:20px}
+    .login-screen{position:fixed;inset:0;background:#f2f5fa;display:none;align-items:center;justify-content:center;z-index:25;padding:20px}
     .login-card{background:white;border-radius:18px;padding:38px;max-width:420px;width:100%;text-align:center;box-shadow:0 8px 28px #19345114}
     .login-card h2{margin-bottom:10px;font-size:24px}
-    .google-btn{display:inline-flex;align-items:center;justify-content:center;gap:10px;width:100%;background:#183153;color:white;font-weight:600;padding:13px;border-radius:10px;margin-top:18px;font-size:15px}
+    .google-btn{display:inline-flex;align-items:center;justify-content:center;gap:10px;width:100%;background:#183153;color:white;font-weight:600;padding:13px;border-radius:10px;margin-top:18px;font-size:15px;text-decoration:none}
 
     /* Indicador de sincronización */
     .sync-badge{
@@ -105,23 +115,75 @@
     }
     @keyframes spin{to{transform:rotate(360deg)}}
 
-    @media(max-width:700px){
-      .stats{grid-template-columns:repeat(2,1fr)}
+    /* --- ADAPTACIÓN MÓVIL (TARJETAS APILADAS) --- */
+    @media(max-width:768px){
+      .wrap{padding:0 14px;margin:16px auto 40px}
+      header h1{font-size:23px;margin-bottom:4px}
+      header p{font-size:13px;margin:4px 0 10px}
+      .actions{width:100%;display:grid;grid-template-columns:1fr 1fr;gap:8px}
+      .actions .user-bar{grid-column:1/-1;justify-content:space-between}
+      .actions button{padding:11px 10px;font-size:13px;text-align:center}
+      .stats{grid-template-columns:repeat(2,1fr);gap:10px;margin:18px 0}
+      .stat{padding:14px;border-radius:12px}
+      .stat b{font-size:23px;margin-top:6px}
+      .stat span{font-size:12px}
+      .toolbar{flex-direction:column;align-items:stretch;gap:8px}
+      .toolbar select,.toolbar button{width:100% !important}
       .grid,.charts-grid{grid-template-columns:1fr}
       .full{grid-column:auto}
-      .wrap{padding:0 12px;margin:20px auto}
+      .dialog{padding:18px;border-radius:14px;max-height:88vh}
+
+      .tablewrap{background:transparent;box-shadow:none;padding:0;overflow:visible}
+      table,thead,tbody,th,td,tr{display:block;width:100%;min-width:0}
+      thead{display:none}
+      tr.projectrow{margin-top:14px;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px #1934510d}
+      tr.projectrow td{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:12px 14px;font-size:15px}
+      tr:not(.projectrow){
+        background:white;
+        border-radius:14px;
+        margin:10px 0 10px 10px;
+        width:calc(100% - 10px);
+        padding:14px;
+        box-shadow:0 3px 12px #1934510d;
+        border-left:5px solid #365ccf;
+      }
+      tr.priority-Alta{border-left-color:#e11d48;background:#fffafa}
+      tr.priority-Media{border-left-color:#eab308;background:#fffef5}
+      tr.priority-Baja{border-left-color:#22a06b;background:#f6fcf8}
+      td{border:0;padding:6px 0;display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:13px;text-align:right}
+      td:first-child{display:none}
+      td:nth-child(2){font-size:16px;padding-bottom:10px;margin-bottom:4px;border-bottom:1px solid #edf0f5;text-align:left;justify-content:flex-start}
+      td:nth-child(3)::before{content:"Soporte";font-weight:600;color:#60718c}
+      td:nth-child(4){align-items:flex-start}
+      td:nth-child(4)::before{content:"Responsable";font-weight:600;color:#60718c}
+      td:nth-child(5)::before{content:"Vence";font-weight:600;color:#60718c}
+      td:nth-child(6){display:none}
+      td:nth-child(7){flex-wrap:wrap;background:#f8fafd;padding:10px;border-radius:10px;margin:6px 0}
+      td:nth-child(7) .progress{width:100%;order:3;margin-top:8px}
+      td:nth-child(7) small{order:2;margin:0}
+      td:nth-child(7) div:last-child{order:4;width:100%;display:flex;gap:8px;margin-top:8px}
+      td:nth-child(7) .step{flex:1;padding:9px;margin:0;font-size:16px}
+      td:nth-child(8){flex-direction:column;align-items:stretch;text-align:left;border-top:1px solid #edf0f5;padding-top:10px;margin-top:4px}
+      td:nth-child(8)::before{content:"Publicaciones programadas";font-weight:600;color:#60718c;margin-bottom:4px}
+      td:nth-child(8) .pub{justify-content:space-between;background:#f8fafd;padding:6px 10px;border-radius:8px}
+      td:nth-child(9){flex-direction:column;align-items:stretch;text-align:left;padding-top:6px}
+      td:nth-child(9)::before{content:"Estado de publicación";font-weight:600;color:#60718c;margin-bottom:4px}
+      td:nth-child(9) .pub{background:#f8fafd;padding:8px 10px;border-radius:8px}
+      td:nth-child(9) input[type="checkbox"]{width:20px;height:20px}
+      td:nth-child(10){padding-top:10px;margin-top:6px;border-top:1px solid #edf0f5}
+      td:nth-child(10) button{width:100%;padding:11px}
     }
   </style>
 </head>
 <body>
 
-  <!-- Pantalla de inicio de sesión con Google -->
+  <!-- Pantalla de inicio de sesión con Google (Web OAuth) -->
   <div id="loginScreen" class="login-screen">
     <div class="login-card">
       <h2>Agenda de proyectos</h2>
       <p>Inicia sesión con tu cuenta de Google autorizada para acceder a los proyectos y al calendario compartido.</p>
 
-      <button id="btnGoogleLogin" class="google-btn" onclick="loginGoogle()">
+      <a href="/auth/login" class="google-btn">
         <svg width="18" height="18" viewBox="0 0 48 48">
           <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
           <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
@@ -129,14 +191,8 @@
           <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
         </svg>
         <span>Continuar con Google</span>
-      </button>
-
-      <div id="loginRetryArea" style="display:none; margin-top:16px; padding-top:14px; border-top:1px solid #edf0f5;">
-        <p id="loginErrorMsg" style="color:#b12727; font-size:13px; margin:0 0 10px;"></p>
-        <button type="button" class="secondary" style="width:100%;" onclick="resetAndRetryLogin()">
-          ↻ Reabrir navegador e intentar de nuevo
-        </button>
-      </div>
+      </a>
+      <p id="loginStatusError" style="color:#b12727; font-size:13px; margin-top:14px; display:none;"></p>
     </div>
   </div>
 
@@ -154,14 +210,13 @@
       </div>
       <div class="actions">
         <div class="user-bar" id="userBar" style="display:none">
-          <span class="user-dot"></span>
-          <span id="userEmail"></span>
-          <button class="btn-logout" onclick="logoutGoogle()" title="Cerrar sesión">Salir</button>
+          <span style="display:flex;align-items:center;gap:6px"><span class="user-dot"></span><span id="userEmail"></span></span>
+          <button class="btn-logout" onclick="logoutGoogle()">Salir</button>
         </div>
         <button class="secondary" onclick="showCharts()">📊 Estadísticas</button>
         <button class="secondary" onclick="showArchive()">Archivados</button>
         <button class="secondary" onclick="makeReport()">Generar informe</button>
-        <button class="secondary" onclick="checkCalendar()">Verificar Calendar</button>
+        <button class="secondary" onclick="call('getAgenda', [], () => notify('Datos actualizados'))">↻ Actualizar</button>
         <button onclick="openProject()">+ Nuevo proyecto</button>
         <button onclick="openTask()">+ Nueva tarea</button>
       </div>
@@ -205,7 +260,7 @@
         <tbody id="body"></tbody>
       </table>
     </div>
-    <p class="muted">Cada proyecto puede contener varias tareas y cada tarea puede tener múltiples fechas de publicación. Los eventos se crean directamente en el calendario compartido al guardar, sin invitaciones individuales.</p>
+    <p class="muted">Sincronizado con Google Sheets, Google Calendar y la aplicación de escritorio.</p>
   </div>
 
   <div class="modal" id="modal">
@@ -223,24 +278,33 @@
   <script>
     let D = { projects: [], tasks: [], publications: [], people: [], supports: [], states: [] };
     let busy = false;
-    let loginAbortController = null;
     let chartInstances = [];
     let collapsedProjects = new Set();
     let initialCollapseApplied = false;
 
     const SYNC_LABELS = {
-      getAgenda: 'Cargando datos de Google Sheets...',
+      getAgenda: 'Cargando datos...',
       saveProject: 'Guardando proyecto...',
-      saveTask: 'Sincronizando tarea con Calendar...',
+      saveTask: 'Sincronizando tarea...',
       shiftStatus: 'Actualizando estado...',
       savePublication: 'Programando en Calendar...',
       togglePublished: 'Actualizando publicación...',
       deletePublication: 'Eliminando evento...',
       archivarProyectoV7: 'Archivando proyecto...',
       restaurarProyectoV7: 'Restaurando proyecto...',
-      generarInformeFinalizadosV7: 'Generando informe Word con gráficos...',
-      probarCalendarV5: 'Verificando conexión...'
+      generarInformeFinalizadosV7: 'Preparando informe...'
     };
+
+    function formatMonthLabel(ym) {
+      if (!ym) return 'Todos los meses (Acumulado)';
+      const [y, m] = ym.split('-');
+      const months = [
+        'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+        'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
+      ];
+      const idx = parseInt(m, 10) - 1;
+      return idx >= 0 && idx < 12 ? `${months[idx]} ${y}` : ym;
+    }
 
     function toggleProject(id, e) {
       if (e && e.target.closest('button')) return;
@@ -301,7 +365,6 @@
           }
           throw new Error(data.error || 'Error en el servidor');
         }
-        if (data.cancelled) return;
         if (data.projects) {
           D = data;
           if (!initialCollapseApplied) {
@@ -330,64 +393,20 @@
         } else {
           document.getElementById('loginScreen').style.display = 'flex';
           document.getElementById('userBar').style.display = 'none';
+          if (st.error) {
+            const errEl = document.getElementById('loginStatusError');
+            errEl.textContent = st.error;
+            errEl.style.display = 'block';
+          }
         }
       } catch (e) {
         document.getElementById('loginScreen').style.display = 'flex';
       }
     }
 
-    async function loginGoogle() {
-      const btn = document.getElementById('btnGoogleLogin');
-      const span = btn.querySelector('span');
-      const retryArea = document.getElementById('loginRetryArea');
-      const errorMsg = document.getElementById('loginErrorMsg');
-
-      btn.disabled = true;
-      span.textContent = 'Esperando confirmación en navegador...';
-
-      retryArea.style.display = 'block';
-      errorMsg.style.color = '#60718c';
-      errorMsg.textContent = '¿Cerraste la pestaña o elegiste otra cuenta?';
-
-      loginAbortController = new AbortController();
-
-      try {
-        const res = await fetch('/api/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({}),
-          signal: loginAbortController.signal
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'No se pudo completar el inicio de sesión');
-
-        retryArea.style.display = 'none';
-        await checkAuth();
-      } catch (e) {
-        if (e.name !== 'AbortError') {
-          errorMsg.style.color = '#b12727';
-          errorMsg.textContent = 'Error o tiempo agotado: ' + (e.message || String(e));
-        }
-      } finally {
-        btn.disabled = false;
-        span.textContent = 'Continuar con Google';
-      }
-    }
-
-    function resetAndRetryLogin() {
-      if (loginAbortController) {
-        loginAbortController.abort();
-      }
-      loginGoogle();
-    }
-
     async function logoutGoogle() {
-      if (!confirm('¿Cerrar sesión de tu cuenta de Google en este equipo?')) return;
-      await fetch('/api/logout', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({})
-      });
+      if (!confirm('¿Cerrar sesión de tu cuenta de Google?')) return;
+      await fetch('/api/logout', { method: 'POST' });
       location.reload();
     }
 
@@ -446,8 +465,8 @@
             <span>${esc(p.name)}</span>
             <span class="pill">${esc(p.priority)}</span>
             <span class="task-summary">${doneCount}/${allProjectTasks.length} finalizadas</span>
-            <button class="link" onclick="openProject('${p.id}')">Editar proyecto</button>
-            ${canArchive ? `<button class="secondary" onclick="archiveProject('${p.id}')">Finalizado · Archivar</button>` : ''}
+            <button class="link" onclick="openProject('${p.id}')">Editar</button>
+            ${canArchive ? `<button class="secondary" onclick="archiveProject('${p.id}')">Archivar</button>` : ''}
           </td>
           <td><button class="secondary" onclick="openTask(null,'${p.id}')">+ Tarea</button></td>
         </tr>`;
@@ -459,7 +478,7 @@
               <td>${esc(p.name)}</td>
               <td><b>${esc(t.title)}</b></td>
               <td>${esc(t.support)}</td>
-              <td>${esc(t.assignee)}<small>${esc(t.email)}</small></td>
+              <td><div>${esc(t.assignee)}<small>${esc(t.email)}</small></div></td>
               <td>${esc(t.due)}</td>
               <td>${esc(p.priority)}</td>
               <td>
@@ -476,9 +495,9 @@
                 <button class="secondary" onclick="openPublication('${t.id}')">+ Fecha</button>
               </td>
               <td>
-                ${pubs.length ? pubs.map(x => `<div class="pub"><input type="checkbox" ${x.published ? 'checked' : ''} onchange="published('${x.id}',this.checked)"><span>${esc(x.date)}</span></div>`).join('') : '—'}
+                ${pubs.length ? pubs.map(x => `<div class="pub"><input type="checkbox" ${x.published ? 'checked' : ''} onchange="published('${x.id}',this.checked)"><span>${esc(x.date)}</span></div>`).join('') : '<span class="muted">—</span>'}
               </td>
-              <td><button class="secondary" onclick="openTask('${t.id}')">Editar</button></td>
+              <td><button class="secondary" onclick="openTask('${t.id}')">Editar tarea</button></td>
             </tr>`;
           });
         }
@@ -509,7 +528,7 @@
           <div class="full"><label>Proyecto</label><input id="pName" value="${esc(p.name || '')}"></div>
           <div><label>Prioridad</label><select id="pPriority">${opt(['Alta', 'Media', 'Baja'], p.priority || 'Media')}</select></div>
           <div class="full"><label>Descripción</label><textarea id="pDesc">${esc(p.description || '')}</textarea></div>
-          <div class="full"><button onclick="saveProjectUI('${p.id || ''}')">Guardar proyecto</button></div>
+          <div class="full"><button style="width:100%" onclick="saveProjectUI('${p.id || ''}')">Guardar proyecto</button></div>
         </div>
       `);
     }
@@ -539,7 +558,7 @@
           <div><label>Inicio</label><input id="tStart" type="date" value="${esc(t.start || '')}"></div>
           <div><label>Vencimiento</label><input id="tDue" type="date" value="${esc(t.due || '')}"></div>
           <div class="full"><label>Texto (copys, guiones, párrafos)</label><textarea id="tText">${esc(t.text || '')}</textarea></div>
-          <div class="full"><button onclick="saveTaskUI('${t.id || ''}')">Guardar tarea en calendario compartido</button></div>
+          <div class="full"><button style="width:100%" onclick="saveTaskUI('${t.id || ''}')">Guardar tarea en calendario compartido</button></div>
         </div>
       `);
     }
@@ -558,7 +577,7 @@
         text: value('tText')
       }], () => {
         closeModal();
-        notify('Tarea guardada y sincronizada con Calendar');
+        notify('Tarea guardada');
       });
     }
 
@@ -571,9 +590,9 @@
       show(id ? 'Editar fecha de publicación' : 'Programar publicación', `
         <label>Fecha de publicación</label>
         <input id="pubDate" type="date" value="${esc(p.date || '')}">
-        <p>Se creará un evento en el calendario compartido y se enviará un recordatorio por correo al responsable el día anterior.</p>
-        <button onclick="savePubUI('${taskId}','${id || ''}')">Guardar fecha</button>
-        ${id ? `<button class="secondary danger" onclick="removePub('${id}')">Eliminar fecha</button>` : ''}
+        <p>Se creará un evento en el calendario compartido.</p>
+        <button style="width:100%;margin-bottom:8px" onclick="savePubUI('${taskId}','${id || ''}')">Guardar fecha</button>
+        ${id ? `<button class="secondary danger" style="width:100%" onclick="removePub('${id}')">Eliminar fecha</button>` : ''}
       `);
     }
 
@@ -585,7 +604,7 @@
     function savePubUI(taskId, id) {
       call('savePublication', [{ taskId, id, date: value('pubDate') }], () => {
         closeModal();
-        notify('Publicación programada en Calendar');
+        notify('Publicación programada');
       });
     }
 
@@ -603,7 +622,7 @@
     }
 
     function archiveProject(id) {
-      if (confirm('¿Archivar este proyecto y retirar sus tareas del listado activo? Se conservarán para informes y no se eliminarán eventos de Calendar.')) {
+      if (confirm('¿Archivar este proyecto y retirar sus tareas del listado activo?')) {
         call('archivarProyectoV7', [id], () => notify('Proyecto archivado'));
       }
     }
@@ -626,36 +645,54 @@
     }
 
     function makeReport() {
-      call('generarInformeFinalizadosV7', [], r => {
-        show('Informe Word generado con gráficos', `
-          <p>Se generó el informe con <b>${r.count} proyectos archivados</b> y sus gráficos estadísticos.</p>
-          <p class="muted">Guardado en: <code>${esc(r.filePath)}</code></p>
-        `);
+      const defaultMonth = new Date().toISOString().slice(0, 7);
+      show('Generar informe Word', `
+        <label for="reportMonthInput">Selecciona el mes del informe (ej. noviembre o diciembre)</label>
+        <input type="month" id="reportMonthInput" value="${defaultMonth}">
+        <p class="muted">Generará un documento Word con el detalle de proyectos, tareas, publicaciones y gráficos del mes seleccionado.</p>
+        <div style="display:flex; gap:10px; margin-top:16px; flex-wrap:wrap;">
+          <button style="flex:1" onclick="runMonthlyReport(document.getElementById('reportMonthInput').value)">📄 Descargar informe del mes</button>
+          <button class="secondary" onclick="runMonthlyReport('')">Todos los archivados</button>
+        </div>
+      `);
+    }
+
+    function runMonthlyReport(ym) {
+      closeModal();
+      call('generarInformeFinalizadosV7', [ym], r => {
+        window.location.href = r.downloadUrl;
+        notify('Descargando informe Word...');
       });
     }
 
     function showCharts() {
-      chartInstances.forEach(c => c.destroy());
-      chartInstances = [];
-
       document.querySelector('.dialog').style.width = 'min(960px, 100%)';
+      const defaultMonth = new Date().toISOString().slice(0, 7);
 
       show('Estadísticas de Proyectos y Equipo', `
-        <div style="display:flex; justify-content:flex-end; gap:10px; margin-bottom:12px;">
-          <button id="btnExportPdf" onclick="exportCharts('pdf')">📕 Descargar PDF</button>
-          <button id="btnExportDocx" class="secondary" onclick="exportCharts('docx')">📄 Descargar Word (.docx)</button>
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:14px; flex-wrap:wrap; background:#f8fafd; padding:12px; border-radius:12px; border:1px solid #e3eaf5;">
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <label for="chartMonthFilter" style="margin:0; font-size:13px;">Período:</label>
+            <input type="month" id="chartMonthFilter" value="${defaultMonth}" onchange="renderChartsForPeriod()" style="width:auto; padding:7px 10px;">
+            <button type="button" class="secondary" onclick="document.getElementById('chartMonthFilter').value=''; renderChartsForPeriod();" style="padding:7px 11px; font-size:12px;">Ver todo</button>
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <button id="btnExportPdf" onclick="exportCharts('pdf')">📕 Descargar PDF</button>
+            <button id="btnExportDocx" class="secondary" onclick="exportCharts('docx')">📄 Descargar Word</button>
+          </div>
         </div>
+        <p id="chartPeriodSummary" class="muted" style="margin:0 0 12px; font-weight:600;"></p>
         <div class="charts-grid">
           <div class="chart-box">
-            <h3>Tareas activas por estado</h3>
+            <h3>Tareas por estado</h3>
             <canvas id="chartStates"></canvas>
           </div>
           <div class="chart-box">
-            <h3>Tareas asignadas por responsable</h3>
+            <h3>Tareas por responsable</h3>
             <canvas id="chartPeople"></canvas>
           </div>
           <div class="chart-box">
-            <h3>Producción por tipo de soporte</h3>
+            <h3>Producción por soporte</h3>
             <canvas id="chartSupports"></canvas>
           </div>
           <div class="chart-box">
@@ -665,11 +702,32 @@
         </div>
       `);
 
-      const activeProjects = new Set(D.projects.filter(p => !p.archived).map(p => p.id));
-      const activeTasks = D.tasks.filter(t => activeProjects.has(t.projectId));
+      renderChartsForPeriod();
+    }
+
+    function renderChartsForPeriod() {
+      chartInstances.forEach(c => c.destroy());
+      chartInstances = [];
+
+      const ym = document.getElementById('chartMonthFilter').value;
+      const periodText = formatMonthLabel(ym);
+
+      const filteredTasks = D.tasks.filter(t => {
+        if (!ym) return D.projects.some(p => p.id === t.projectId && !p.archived);
+        return (t.due && t.due.startsWith(ym)) || (t.start && t.start.startsWith(ym));
+      });
+
+      const taskIds = new Set(filteredTasks.map(t => t.id));
+      const filteredPubs = D.publications.filter(u => {
+        if (!ym) return taskIds.has(u.taskId);
+        return u.date && u.date.startsWith(ym);
+      });
+
+      document.getElementById('chartPeriodSummary').textContent =
+        `Mostrando: ${periodText} · ${filteredTasks.length} tareas y ${filteredPubs.length} publicaciones`;
 
       // 1. Estados
-      const stateCounts = D.states.map(st => activeTasks.filter(t => t.status === st).length);
+      const stateCounts = D.states.map(st => filteredTasks.filter(t => t.status === st).length);
       chartInstances.push(new Chart(document.getElementById('chartStates'), {
         type: 'doughnut',
         data: {
@@ -682,8 +740,8 @@
       // 2. Responsables
       const peopleNames = D.people.map(p => p.name.split(' ')[0]);
       const peopleEmails = D.people.map(p => p.email);
-      const inProgressByPerson = peopleEmails.map(em => activeTasks.filter(t => t.email === em && t.status !== 'Finalizada').length);
-      const doneByPerson = peopleEmails.map(em => activeTasks.filter(t => t.email === em && t.status === 'Finalizada').length);
+      const inProgressByPerson = peopleEmails.map(em => filteredTasks.filter(t => t.email === em && t.status !== 'Finalizada').length);
+      const doneByPerson = peopleEmails.map(em => filteredTasks.filter(t => t.email === em && t.status === 'Finalizada').length);
 
       chartInstances.push(new Chart(document.getElementById('chartPeople'), {
         type: 'bar',
@@ -702,14 +760,14 @@
       }));
 
       // 3. Soportes
-      const usedSupports = D.supports.filter(sp => activeTasks.some(t => t.support === sp));
-      const supportCounts = usedSupports.map(sp => activeTasks.filter(t => t.support === sp).length);
+      const usedSupports = D.supports.filter(sp => filteredTasks.some(t => t.support === sp));
+      const supportCounts = usedSupports.map(sp => filteredTasks.filter(t => t.support === sp).length);
 
       chartInstances.push(new Chart(document.getElementById('chartSupports'), {
         type: 'bar',
         data: {
-          labels: usedSupports,
-          datasets: [{ label: 'Cantidad', data: supportCounts, backgroundColor: '#183153' }]
+          labels: usedSupports.length ? usedSupports : ['Sin datos'],
+          datasets: [{ label: 'Cantidad', data: supportCounts.length ? supportCounts : [0], backgroundColor: '#183153' }]
         },
         options: {
           indexAxis: 'y',
@@ -720,10 +778,8 @@
       }));
 
       // 4. Publicaciones
-      const activeTaskIds = new Set(activeTasks.map(t => t.id));
-      const activePubs = D.publications.filter(u => activeTaskIds.has(u.taskId));
-      const pubDone = activePubs.filter(u => u.published).length;
-      const pubPending = activePubs.length - pubDone;
+      const pubDone = filteredPubs.filter(u => u.published).length;
+      const pubPending = filteredPubs.length - pubDone;
 
       chartInstances.push(new Chart(document.getElementById('chartPubs'), {
         type: 'pie',
@@ -739,13 +795,15 @@
       const btn = document.getElementById(format === 'pdf' ? 'btnExportPdf' : 'btnExportDocx');
       const originalText = btn.textContent;
       btn.disabled = true;
-      btn.textContent = 'Generando ' + format.toUpperCase() + '...';
+      btn.textContent = 'Generando...';
 
       try {
+        const ym = document.getElementById('chartMonthFilter').value;
+        const periodLabel = formatMonthLabel(ym);
         const charts = [
-          { id: 'chartStates', title: 'Tareas activas por estado' },
-          { id: 'chartPeople', title: 'Tareas asignadas por responsable' },
-          { id: 'chartSupports', title: 'Producción por tipo de soporte' },
+          { id: 'chartStates', title: 'Tareas por estado' },
+          { id: 'chartPeople', title: 'Tareas por responsable' },
+          { id: 'chartSupports', title: 'Producción por soporte' },
           { id: 'chartPubs', title: 'Estado de publicaciones' }
         ];
 
@@ -757,23 +815,29 @@
         const res = await fetch('/api/exportCharts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ images, format })
+          body: JSON.stringify({ images, format, month: ym, periodLabel })
         });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Error al generar el reporte');
-        if (data.cancelled) return;
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(err.error || 'Error al generar el reporte');
+        }
 
-        notify('Archivo guardado en: ' + data.filePath);
+        const blob = await res.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `Estadisticas_${ym || 'Total'}.${format}`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.URL.revokeObjectURL(url);
+        notify('Reporte descargado');
       } catch (e) {
         notify(e.message || String(e));
       } finally {
         btn.disabled = false;
         btn.textContent = originalText;
       }
-    }
-
-    function checkCalendar() {
-      call('probarCalendarV5', [], r => notify(r.message || r));
     }
 
     checkAuth();

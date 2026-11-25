@@ -1,3 +1,4 @@
+
 import os
 import io
 import json
@@ -25,8 +26,9 @@ from reportlab.lib.utils import ImageReader
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CLIENT_SECRET_PATH = os.path.join(BASE_DIR, 'client_secret_web.json')
+SESSIONS_DIR = '/tmp/agenda_sessions'
+os.makedirs(SESSIONS_DIR, exist_ok=True)
 
-# CONFIGURACIÓN: Variables de entorno en Render
 SPREADSHEET_ID = os.environ.get('SPREADSHEET_ID', '1j8yHiDL6fHpwCZTNXVEvQOr-R9oPlXsyueH2ZvmwqHM')
 TZ = ZoneInfo('America/Santiago')
 
@@ -35,10 +37,9 @@ app = Flask(
     template_folder=os.path.join(BASE_DIR, 'templates'),
     static_folder=os.path.join(BASE_DIR, 'static')
 )
-app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'cambia-esta-clave-secreta-por-una-larga-2026')
+app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'rp2026_x9K7mP2vQ8wL4nR2zT6yB3cF5hA1dG9s')
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
-# Cookies seguras para HTTPS (Render)
 is_local = os.environ.get('FLASK_ENV') == 'development'
 app.config.update(
     SESSION_COOKIE_SECURE=not is_local,
@@ -68,7 +69,6 @@ SCOPES = [
 ]
 
 def format_month_es(ym):
-    """Convierte '2026-11' en 'Noviembre 2026'."""
     if not ym or len(ym) < 7 or '-' not in ym:
         return 'Todos los meses (Acumulado)'
     try:
@@ -81,7 +81,6 @@ def format_month_es(ym):
     return ym
 
 def create_oauth_flow(redirect_uri, state=None):
-    """Soporta tanto archivo client_secret_web.json como variable de entorno GOOGLE_CLIENT_SECRET_JSON."""
     env_secret = os.environ.get('GOOGLE_CLIENT_SECRET_JSON')
     if env_secret:
         client_config = json.loads(env_secret)
@@ -90,31 +89,63 @@ def create_oauth_flow(redirect_uri, state=None):
         raise FileNotFoundError("Falta client_secret_web.json o la variable GOOGLE_CLIENT_SECRET_JSON")
     return Flow.from_client_secrets_file(CLIENT_SECRET_PATH, scopes=SCOPES, state=state, redirect_uri=redirect_uri)
 
-def creds_to_dict(creds):
-    return {
-        'token': creds.token,
-        'refresh_token': creds.refresh_token,
-        'token_uri': creds.token_uri,
-        'client_id': creds.client_id,
-        'client_secret': creds.client_secret,
-        'scopes': creds.scopes
-    }
+def _session_file():
+    sid = session.get('sid')
+    if not sid:
+        sid = uuid.uuid4().hex
+        session['sid'] = sid
+    safe_sid = ''.join(c for c in sid if c.isalnum())
+    return os.path.join(SESSIONS_DIR, f"{safe_sid}.json")
+
+def save_session_credentials(creds):
+    session.permanent = True
+    path = _session_file()
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump({
+            'token': creds.token,
+            'refresh_token': creds.refresh_token,
+            'token_uri': creds.token_uri,
+            'client_id': creds.client_id,
+            'client_secret': creds.client_secret,
+            'scopes': list(creds.scopes) if creds.scopes else SCOPES
+        }, f)
+
+def clear_session_credentials():
+    sid = session.get('sid')
+    if sid:
+        safe_sid = ''.join(c for c in sid if c.isalnum())
+        path = os.path.join(SESSIONS_DIR, f"{safe_sid}.json")
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+    session.clear()
 
 def get_session_credentials():
-    info = session.get('credentials')
-    if not info:
+    if not session.get('sid'):
         return None
-    creds = Credentials(**info)
+    path = _session_file()
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            info = json.load(f)
+        creds = Credentials(**info)
+    except Exception:
+        clear_session_credentials()
+        return None
+
     if not creds.valid:
         if creds.expired and creds.refresh_token:
             try:
                 creds.refresh(Request())
-                session['credentials'] = creds_to_dict(creds)
+                save_session_credentials(creds)
             except Exception:
-                session.pop('credentials', None)
+                clear_session_credentials()
                 return None
         else:
-            session.pop('credentials', None)
+            clear_session_credentials()
             return None
     return creds
 
@@ -136,15 +167,14 @@ def get_google_services():
     user_info = oauth_service.userinfo().get().execute()
     user_email = str(user_info.get('email', '')).strip().lower()
 
-    # Validación contra la hoja 'Responsables' (columna B)
     allowed = {
         str(r['v'][1]).strip().lower()
         for r in all_rows(sh, SHEETS['R'])
         if len(r['v']) >= 2 and r['v'][1]
     }
     if user_email not in allowed:
-        session.clear()
-        raise PermissionError(f"Acceso denegado: {user_email} no pertenece al equipo autorizado.")
+        clear_session_credentials()
+        raise PermissionError(f"Acceso denegado: {user_email} no está registrado en la hoja Responsables.")
 
     cal_service = build('calendar', 'v3', credentials=creds, cache_discovery=False)
     drive_service = build('drive', 'v3', credentials=creds, cache_discovery=False)
@@ -303,9 +333,10 @@ def auth_status():
         _, _, _, email = get_google_services()
         return jsonify({'authenticated': True, 'email': email})
     except PermissionError as pe:
+        clear_session_credentials()
         return jsonify({'authenticated': False, 'error': str(pe)})
-    except Exception:
-        return jsonify({'authenticated': False})
+    except Exception as e:
+        return jsonify({'authenticated': False, 'error': f"Error al conectar con Google: {str(e)}"})
 
 @app.route('/auth/login', methods=['GET'])
 def auth_login():
@@ -317,12 +348,13 @@ def auth_login():
         include_granted_scopes='true',
         prompt='select_account'
     )
+    session.permanent = True
     session['oauth_state'] = state
     return redirect(authorization_url)
 
 @app.route('/oauth2callback', methods=['GET'])
 def auth_callback():
-    state = session.get('oauth_state')
+    state = session.pop('oauth_state', None)
     scheme = 'http' if is_local else 'https'
     redirect_uri = url_for('auth_callback', _external=True, _scheme=scheme)
     flow = create_oauth_flow(redirect_uri=redirect_uri, state=state)
@@ -330,13 +362,12 @@ def auth_callback():
     auth_response = request.url if is_local else request.url.replace('http://', 'https://')
     flow.fetch_token(authorization_response=auth_response)
 
-    session.permanent = True
-    session['credentials'] = creds_to_dict(flow.credentials)
+    save_session_credentials(flow.credentials)
     return redirect('/')
 
 @app.route('/api/logout', methods=['POST'])
 def logout():
-    session.clear()
+    clear_session_credentials()
     return jsonify({'authenticated': False})
 
 # --- EXPORTACIÓN DE GRÁFICOS CON FILTRO MENSUAL ---
@@ -435,7 +466,6 @@ def download_archived_report():
         now_readable = datetime.now(TZ).strftime('%d-%m-%Y %H:%M')
 
         if ym:
-            # Modo mensual: incluye todas las tareas (activas o archivadas) con inicio o vencimiento en ese mes
             period_label = format_month_es(ym)
             selected_tasks = [
                 t for t in all_tasks
@@ -451,7 +481,6 @@ def download_archived_report():
             subtitle = f"Período: {period_label} | Proyectos involucrados: {len(selected_projects)} | Tareas: {len(selected_tasks)} | Generado: {now_readable} | Por: {user_email}"
             filename = f"Informe_Mensual_{ym}_{now}.docx"
         else:
-            # Modo acumulado: todos los proyectos archivados
             selected_projects = [x for x in all_projects if len(x['v']) > 6 and str(x['v'][6]).upper() == 'TRUE']
             if not selected_projects:
                 return jsonify({'error': 'No hay proyectos archivados'}), 400
