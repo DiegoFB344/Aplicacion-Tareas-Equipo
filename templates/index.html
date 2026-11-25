@@ -15,7 +15,7 @@
     h1{font-size:29px;margin:0 0 8px}
     h2{margin:0 0 18px}
     p{color:#60718c}
-    button{border:0;border-radius:10px;background:#365ccf;color:white;padding:10px 15px;cursor:pointer;font-size:14px}
+    button{border:0;border-radius:10px;background:#365ccf;color:white;padding:10px 15px;cursor:pointer;font-size:14px;font-weight:600}
     button.secondary{background:#e9eef8;color:#183153}
     button:disabled{opacity:.4;cursor:not-allowed}
     .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:28px 0}
@@ -37,20 +37,20 @@
     tr.priority-Alta{background:#fff0f0}
     tr.priority-Media{background:#fff9df}
     tr.priority-Baja{background:#edfaef}
-    .tag{display:inline-block;background:#eaf0fb;padding:7px 10px;border-radius:20px}
+    .tag{display:inline-block;background:#eaf0fb;padding:7px 10px;border-radius:20px;font-weight:600}
     .progress{background:#e4e9f1;height:7px;border-radius:6px;margin-top:7px;width:105px}
     .bar{height:7px;background:#365ccf;border-radius:6px}
     .step{padding:7px 11px;margin-right:5px}
     .pub{display:flex;align-items:center;gap:8px;margin:5px 0;white-space:nowrap}
     .pub input{width:auto}
     .pub button{padding:4px 7px;font-size:11px}
-    .modal{position:fixed;inset:0;background:#12213b88;display:none;align-items:center;justify-content:center;padding:15px;z-index:3}
+    .modal{position:fixed;inset:0;background:#12213b88;display:none;align-items:center;justify-content:center;padding:15px;z-index:20}
     .modal.show{display:flex}
     .dialog{background:white;border-radius:16px;padding:25px;width:min(690px,100%);max-height:92vh;overflow:auto}
     .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
     .full{grid-column:1/-1}
     .muted{font-size:12px;color:#73829b}
-    .toast{position:fixed;bottom:20px;right:20px;background:#183153;color:white;padding:13px 18px;border-radius:10px;display:none;z-index:30}
+    .toast{position:fixed;bottom:20px;right:20px;background:#183153;color:white;padding:13px 18px;border-radius:10px;display:none;z-index:30;box-shadow:0 6px 20px #00000033}
     .empty{padding:40px;text-align:center;color:#7b8ba0}
     .archiveitem{padding:12px;border-bottom:1px solid #e7ebf1}
 
@@ -75,8 +75,8 @@
     .user-dot{width:8px;height:8px;background:#22a06b;border-radius:50%;display:inline-block}
     .btn-logout{background:none;color:#b12727;padding:2px 6px;font-size:12px;font-weight:600}
 
-    /* Pantalla de Login */
-    .login-screen{position:fixed;inset:0;background:#f2f5fa;display:none;align-items:center;justify-content:center;z-index:20;padding:20px}
+    /* Pantalla de Login Local */
+    .login-screen{position:fixed;inset:0;background:#f2f5fa;display:none;align-items:center;justify-content:center;z-index:25;padding:20px}
     .login-card{background:white;border-radius:18px;padding:38px;max-width:420px;width:100%;text-align:center;box-shadow:0 8px 28px #19345114}
     .login-card h2{margin-bottom:10px;font-size:24px}
     .google-btn{display:inline-flex;align-items:center;justify-content:center;gap:10px;width:100%;background:#183153;color:white;font-weight:600;padding:13px;border-radius:10px;margin-top:18px;font-size:15px}
@@ -115,7 +115,7 @@
 </head>
 <body>
 
-  <!-- Pantalla de inicio de sesión con Google -->
+  <!-- Pantalla de inicio de sesión con Google (Escritorio Local) -->
   <div id="loginScreen" class="login-screen">
     <div class="login-card">
       <h2>Agenda de proyectos</h2>
@@ -241,6 +241,17 @@
       generarInformeFinalizadosV7: 'Generando informe Word con gráficos...',
       probarCalendarV5: 'Verificando conexión...'
     };
+
+    function formatMonthLabel(ym) {
+      if (!ym) return 'Todos los meses (Acumulado)';
+      const [y, m] = ym.split('-');
+      const months = [
+        'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+        'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
+      ];
+      const idx = parseInt(m, 10) - 1;
+      return idx >= 0 && idx < 12 ? `${months[idx]} ${y}` : ym;
+    }
 
     function toggleProject(id, e) {
       if (e && e.target.closest('button')) return;
@@ -626,36 +637,56 @@
     }
 
     function makeReport() {
-      call('generarInformeFinalizadosV7', [], r => {
+      const defaultMonth = new Date().toISOString().slice(0, 7);
+      show('Generar informe Word', `
+        <label for="reportMonthInput">Selecciona el mes del informe (ej. noviembre o diciembre)</label>
+        <input type="month" id="reportMonthInput" value="${defaultMonth}">
+        <p class="muted">Generará un documento Word con el detalle de proyectos, tareas, publicaciones y gráficos del mes seleccionado.</p>
+        <div style="display:flex; gap:10px; margin-top:16px; flex-wrap:wrap;">
+          <button style="flex:1" onclick="runMonthlyReport(document.getElementById('reportMonthInput').value)">📄 Guardar informe del mes</button>
+          <button class="secondary" onclick="runMonthlyReport('')">Todos los archivados</button>
+        </div>
+      `);
+    }
+
+    function runMonthlyReport(ym) {
+      closeModal();
+      call('generarInformeFinalizadosV7', [ym], r => {
         show('Informe Word generado con gráficos', `
-          <p>Se generó el informe con <b>${r.count} proyectos archivados</b> y sus gráficos estadísticos.</p>
+          <p>Se generó el informe con <b>${r.count} ${ym ? 'tareas del período' : 'proyectos archivados'}</b> y sus gráficos estadísticos.</p>
           <p class="muted">Guardado en: <code>${esc(r.filePath)}</code></p>
         `);
       });
     }
 
     function showCharts() {
-      chartInstances.forEach(c => c.destroy());
-      chartInstances = [];
-
       document.querySelector('.dialog').style.width = 'min(960px, 100%)';
+      const defaultMonth = new Date().toISOString().slice(0, 7);
 
       show('Estadísticas de Proyectos y Equipo', `
-        <div style="display:flex; justify-content:flex-end; gap:10px; margin-bottom:12px;">
-          <button id="btnExportPdf" onclick="exportCharts('pdf')">📕 Descargar PDF</button>
-          <button id="btnExportDocx" class="secondary" onclick="exportCharts('docx')">📄 Descargar Word (.docx)</button>
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:14px; flex-wrap:wrap; background:#f8fafd; padding:12px; border-radius:12px; border:1px solid #e3eaf5;">
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <label for="chartMonthFilter" style="margin:0; font-size:13px;">Período:</label>
+            <input type="month" id="chartMonthFilter" value="${defaultMonth}" onchange="renderChartsForPeriod()" style="width:auto; padding:7px 10px;">
+            <button type="button" class="secondary" onclick="document.getElementById('chartMonthFilter').value=''; renderChartsForPeriod();" style="padding:7px 11px; font-size:12px;">Ver todo</button>
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <button id="btnExportPdf" onclick="exportCharts('pdf')">📕 Guardar PDF</button>
+            <button id="btnExportDocx" class="secondary" onclick="exportCharts('docx')">📄 Guardar Word (.docx)</button>
+          </div>
         </div>
+        <p id="chartPeriodSummary" class="muted" style="margin:0 0 12px; font-weight:600;"></p>
         <div class="charts-grid">
           <div class="chart-box">
-            <h3>Tareas activas por estado</h3>
+            <h3>Tareas por estado</h3>
             <canvas id="chartStates"></canvas>
           </div>
           <div class="chart-box">
-            <h3>Tareas asignadas por responsable</h3>
+            <h3>Tareas por responsable</h3>
             <canvas id="chartPeople"></canvas>
           </div>
           <div class="chart-box">
-            <h3>Producción por tipo de soporte</h3>
+            <h3>Producción por soporte</h3>
             <canvas id="chartSupports"></canvas>
           </div>
           <div class="chart-box">
@@ -665,11 +696,32 @@
         </div>
       `);
 
-      const activeProjects = new Set(D.projects.filter(p => !p.archived).map(p => p.id));
-      const activeTasks = D.tasks.filter(t => activeProjects.has(t.projectId));
+      renderChartsForPeriod();
+    }
+
+    function renderChartsForPeriod() {
+      chartInstances.forEach(c => c.destroy());
+      chartInstances = [];
+
+      const ym = document.getElementById('chartMonthFilter').value;
+      const periodText = formatMonthLabel(ym);
+
+      const filteredTasks = D.tasks.filter(t => {
+        if (!ym) return D.projects.some(p => p.id === t.projectId && !p.archived);
+        return (t.due && t.due.startsWith(ym)) || (t.start && t.start.startsWith(ym));
+      });
+
+      const taskIds = new Set(filteredTasks.map(t => t.id));
+      const filteredPubs = D.publications.filter(u => {
+        if (!ym) return taskIds.has(u.taskId);
+        return u.date && u.date.startsWith(ym);
+      });
+
+      document.getElementById('chartPeriodSummary').textContent =
+        `Mostrando: ${periodText} · ${filteredTasks.length} tareas y ${filteredPubs.length} publicaciones`;
 
       // 1. Estados
-      const stateCounts = D.states.map(st => activeTasks.filter(t => t.status === st).length);
+      const stateCounts = D.states.map(st => filteredTasks.filter(t => t.status === st).length);
       chartInstances.push(new Chart(document.getElementById('chartStates'), {
         type: 'doughnut',
         data: {
@@ -682,8 +734,8 @@
       // 2. Responsables
       const peopleNames = D.people.map(p => p.name.split(' ')[0]);
       const peopleEmails = D.people.map(p => p.email);
-      const inProgressByPerson = peopleEmails.map(em => activeTasks.filter(t => t.email === em && t.status !== 'Finalizada').length);
-      const doneByPerson = peopleEmails.map(em => activeTasks.filter(t => t.email === em && t.status === 'Finalizada').length);
+      const inProgressByPerson = peopleEmails.map(em => filteredTasks.filter(t => t.email === em && t.status !== 'Finalizada').length);
+      const doneByPerson = peopleEmails.map(em => filteredTasks.filter(t => t.email === em && t.status === 'Finalizada').length);
 
       chartInstances.push(new Chart(document.getElementById('chartPeople'), {
         type: 'bar',
@@ -702,14 +754,14 @@
       }));
 
       // 3. Soportes
-      const usedSupports = D.supports.filter(sp => activeTasks.some(t => t.support === sp));
-      const supportCounts = usedSupports.map(sp => activeTasks.filter(t => t.support === sp).length);
+      const usedSupports = D.supports.filter(sp => filteredTasks.some(t => t.support === sp));
+      const supportCounts = usedSupports.map(sp => filteredTasks.filter(t => t.support === sp).length);
 
       chartInstances.push(new Chart(document.getElementById('chartSupports'), {
         type: 'bar',
         data: {
-          labels: usedSupports,
-          datasets: [{ label: 'Cantidad', data: supportCounts, backgroundColor: '#183153' }]
+          labels: usedSupports.length ? usedSupports : ['Sin datos'],
+          datasets: [{ label: 'Cantidad', data: supportCounts.length ? supportCounts : [0], backgroundColor: '#183153' }]
         },
         options: {
           indexAxis: 'y',
@@ -720,10 +772,8 @@
       }));
 
       // 4. Publicaciones
-      const activeTaskIds = new Set(activeTasks.map(t => t.id));
-      const activePubs = D.publications.filter(u => activeTaskIds.has(u.taskId));
-      const pubDone = activePubs.filter(u => u.published).length;
-      const pubPending = activePubs.length - pubDone;
+      const pubDone = filteredPubs.filter(u => u.published).length;
+      const pubPending = filteredPubs.length - pubDone;
 
       chartInstances.push(new Chart(document.getElementById('chartPubs'), {
         type: 'pie',
@@ -742,10 +792,12 @@
       btn.textContent = 'Generando ' + format.toUpperCase() + '...';
 
       try {
+        const ym = document.getElementById('chartMonthFilter').value;
+        const periodLabel = formatMonthLabel(ym);
         const charts = [
-          { id: 'chartStates', title: 'Tareas activas por estado' },
-          { id: 'chartPeople', title: 'Tareas asignadas por responsable' },
-          { id: 'chartSupports', title: 'Producción por tipo de soporte' },
+          { id: 'chartStates', title: 'Tareas por estado' },
+          { id: 'chartPeople', title: 'Tareas por responsable' },
+          { id: 'chartSupports', title: 'Producción por soporte' },
           { id: 'chartPubs', title: 'Estado de publicaciones' }
         ];
 
@@ -757,7 +809,7 @@
         const res = await fetch('/api/exportCharts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ images, format })
+          body: JSON.stringify({ images, format, month: ym, periodLabel })
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Error al generar el reporte');
@@ -777,7 +829,6 @@
     }
 
     checkAuth();
-    
   </script>
 </body>
 </html>
