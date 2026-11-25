@@ -229,10 +229,10 @@ def build_agenda_payload(sh):
 
     return {'projects': ps, 'tasks': ts, 'publications': pubs, 'people': people, 'supports': SP, 'states': ST}
 
-@app.route('/static/512.png')
+@app.route('/static/icon-512.png')
 def pwa_icon():
     from PIL import Image, ImageDraw
-    icon_file = os.path.join(BASE_DIR, 'static', '512.png')
+    icon_file = os.path.join(BASE_DIR, 'static', 'icon-512.png')
     if os.path.exists(icon_file):
         return send_file(icon_file, mimetype='image/png')
 
