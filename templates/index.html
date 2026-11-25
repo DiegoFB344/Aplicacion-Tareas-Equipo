@@ -63,7 +63,11 @@
     .toast{position:fixed;bottom:20px;right:20px;left:20px;max-width:420px;margin:0 auto;background:#183153;color:white;padding:13px 18px;border-radius:10px;display:none;z-index:30;text-align:center;box-shadow:0 6px 20px #00000033}
     .empty{padding:40px;text-align:center;color:#7b8ba0}
     .archiveitem{padding:12px;border-bottom:1px solid #e7ebf1}
-    .projectrow td{background:#e9eef7;font-weight:bold}
+   .projectrow td{background:#e9eef7;font-weight:bold;cursor:pointer;user-select:none}
+.projectrow:hover td{background:#dfe6f3}
+.toggle-icon{display:inline-block;width:18px;font-size:12px;transition:transform .15s ease;color:#365ccf}
+.toggle-icon.closed{transform:rotate(-90deg)}
+.task-count{font-size:12px;font-weight:normal;color:#60718c;margin-left:6px}
     .link{background:none;color:#365ccf;padding:3px 6px}
     .danger{color:#b12727}
     .pill{font-size:11px;padding:4px 7px;border-radius:6px;background:#eef2f8}
@@ -229,6 +233,7 @@
         <option>En revisión</option>
         <option>Finalizada</option>
       </select>
+      <button type="button" class="secondary" onclick="toggleAllProjects()" id="btnToggleAll">Contraer todos</button>
     </div>
 
     <div class="panel tablewrap" id="tableWrap">
@@ -270,6 +275,27 @@
     let busy = false;
     let chartInstances = [];
 
+let collapsedProjects = new Set();
+
+function toggleProject(id, e) {
+  if (e && e.target.closest('button')) return; // Evita cerrar si se pulsó "Editar" o "+ Tarea"
+  if (collapsedProjects.has(id)) {
+    collapsedProjects.delete(id);
+  } else {
+    collapsedProjects.add(id);
+  }
+  render();
+}
+
+function toggleAllProjects() {
+  const activeIds = D.projects.filter(p => !p.archived).map(p => p.id);
+  if (collapsedProjects.size < activeIds.length) {
+    activeIds.forEach(id => collapsedProjects.add(id));
+  } else {
+    collapsedProjects.clear();
+  }
+  render();
+}
     const SYNC_LABELS = {
       getAgenda: 'Cargando datos...',
       saveProject: 'Guardando proyecto...',
@@ -609,7 +635,66 @@
         </div>
       `);
 
-      const activeProjects = new Set(D.projects.filter(p => !p.archived).map(p => p.id));
+      const activeProjectsList = D.projects.filter(p => !p.archived);
+      const btnAll = document.getElementById('btnToggleAll');
+      if (btnAll) {
+        btnAll.textContent = collapsedProjects.size >= activeProjectsList.length && activeProjectsList.length
+          ? 'Expandir todos'
+          : 'Contraer todos';
+      }
+
+      activeProjectsList.forEach(p => {
+        const tasks = D.tasks.filter(t => t.projectId === p.id && (!f || t.status === f) && [p.name, t.title, t.support, t.assignee].some(x => x.toLowerCase().includes(q)));
+        if (!tasks.length && q) return;
+        if (!tasks.length && f) return;
+
+        // Si el usuario está buscando texto o filtrando estado, mostramos el proyecto abierto automáticamente
+        const isCollapsed = collapsedProjects.has(p.id) && !q && !f;
+        const canArchive = D.tasks.some(t => t.projectId === p.id) && D.tasks.filter(t => t.projectId === p.id).every(t => t.status === 'Finalizada');
+
+        html += `<tr class="projectrow" onclick="toggleProject('${p.id}', event)">
+          <td colspan="9">
+            <span class="toggle-icon ${isCollapsed ? 'closed' : ''}">▼</span>
+            <span>${esc(p.name)}</span>
+            <span class="pill">${esc(p.priority)}</span>
+            <span class="task-count">(${tasks.length} ${tasks.length === 1 ? 'tarea' : 'tareas'})</span>
+            <button class="link" onclick="openProject('${p.id}')">Editar</button>
+            ${canArchive ? `<button class="secondary" onclick="archiveProject('${p.id}')">Archivar</button>` : ''}
+          </td>
+          <td><button class="secondary" onclick="openTask(null,'${p.id}')">+ Tarea</button></td>
+        </tr>`;
+
+        if (!isCollapsed) {
+          tasks.forEach(t => {
+            const pubs = D.publications.filter(x => x.taskId === t.id).sort((a, b) => a.date.localeCompare(b.date));
+            html += `<tr class="priority-${esc(p.priority)}">
+              <td>${esc(p.name)}</td>
+              <td><b>${esc(t.title)}</b></td>
+              <td>${esc(t.support)}</td>
+              <td><div>${esc(t.assignee)}<small>${esc(t.email)}</small></div></td>
+              <td>${esc(t.due)}</td>
+              <td>${esc(p.priority)}</td>
+              <td>
+                <span class="tag">${esc(t.status)}</span>
+                <div class="progress"><div class="bar" style="width:${t.progress}%"></div></div>
+                <small>${t.progress}%</small>
+                <div>
+                  <button class="secondary step" ${t.status === 'Pendiente' ? 'disabled' : ''} onclick="shift('${t.id}',-1)">‹</button>
+                  <button class="secondary step" ${t.status === 'Finalizada' ? 'disabled' : ''} onclick="shift('${t.id}',1)">›</button>
+                </div>
+              </td>
+              <td>
+                ${pubs.map(x => `<div class="pub">${esc(x.date)} <button class="secondary" onclick="editPublication('${x.id}')">Editar</button></div>`).join('') || '<span class="muted">Sin fechas</span>'}
+                <button class="secondary" onclick="openPublication('${t.id}')">+ Fecha</button>
+              </td>
+              <td>
+                ${pubs.length ? pubs.map(x => `<div class="pub"><input type="checkbox" ${x.published ? 'checked' : ''} onchange="published('${x.id}',this.checked)"><span>${esc(x.date)}</span></div>`).join('') : '<span class="muted">—</span>'}
+              </td>
+              <td><button class="secondary" onclick="openTask('${t.id}')">Editar tarea</button></td>
+            </tr>`;
+          });
+        }
+      });
       const activeTasks = D.tasks.filter(t => activeProjects.has(t.projectId));
 
       const stateCounts = D.states.map(st => activeTasks.filter(t => t.status === st).length);
