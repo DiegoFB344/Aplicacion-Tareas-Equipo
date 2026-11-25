@@ -35,7 +35,7 @@ app = Flask(
     template_folder=os.path.join(BASE_DIR, 'templates'),
     static_folder=os.path.join(BASE_DIR, 'static')
 )
-app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'cambia-esta-clave-secreta-por-una-larga-2026')
+app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'rp2026_x9K7mP2vQ8wL4nR2zT6yB3cF5hA1dG9s')
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
 # Cookies seguras para HTTPS (Render)
