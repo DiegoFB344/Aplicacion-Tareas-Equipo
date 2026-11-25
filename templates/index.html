@@ -64,7 +64,7 @@
     .empty{padding:40px;text-align:center;color:#7b8ba0}
     .archiveitem{padding:12px;border-bottom:1px solid #e7ebf1}
 
-    /* Fila de proyecto desplegable */
+    /* Fila de proyecto desplegable (Acordeón) */
     .projectrow td{background:#e9eef7;font-weight:bold;cursor:pointer;user-select:none;transition:background .15s ease}
     .projectrow:hover td{background:#dfe6f3}
     .toggle-icon{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:6px;background:white;color:#365ccf;font-size:11px;margin-right:6px;transition:transform .15s ease;box-shadow:0 1px 3px #1831531a}
@@ -293,6 +293,17 @@
       restaurarProyectoV7: 'Restaurando proyecto...',
       generarInformeFinalizadosV7: 'Preparando informe...'
     };
+
+    function formatMonthLabel(ym) {
+      if (!ym) return 'Todos los meses (Acumulado)';
+      const [y, m] = ym.split('-');
+      const months = [
+        'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+        'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
+      ];
+      const idx = parseInt(m, 10) - 1;
+      return idx >= 0 && idx < 12 ? `${months[idx]} ${y}` : ym;
+    }
 
     function toggleProject(id, e) {
       if (e && e.target.closest('button')) return;
@@ -530,7 +541,6 @@
         notify('Primero crea un proyecto');
         return;
       }
-      // Al agregar o editar una tarea en un proyecto, lo abrimos automáticamente para ver el cambio
       collapsedProjects.delete(pId);
 
       show(id ? 'Editar tarea' : 'Nueva tarea', `
@@ -629,34 +639,54 @@
     }
 
     function makeReport() {
-      call('generarInformeFinalizadosV7', [], r => {
+      const defaultMonth = new Date().toISOString().slice(0, 7);
+      show('Generar informe Word', `
+        <label for="reportMonthInput">Selecciona el mes del informe (ej. noviembre o diciembre)</label>
+        <input type="month" id="reportMonthInput" value="${defaultMonth}">
+        <p class="muted">Generará un documento Word con el detalle de proyectos, tareas, publicaciones y gráficos del mes seleccionado.</p>
+        <div style="display:flex; gap:10px; margin-top:16px; flex-wrap:wrap;">
+          <button style="flex:1" onclick="runMonthlyReport(document.getElementById('reportMonthInput').value)">📄 Descargar informe del mes</button>
+          <button class="secondary" onclick="runMonthlyReport('')">Todos los archivados</button>
+        </div>
+      `);
+    }
+
+    function runMonthlyReport(ym) {
+      closeModal();
+      call('generarInformeFinalizadosV7', [ym], r => {
         window.location.href = r.downloadUrl;
         notify('Descargando informe Word...');
       });
     }
 
     function showCharts() {
-      chartInstances.forEach(c => c.destroy());
-      chartInstances = [];
-
       document.querySelector('.dialog').style.width = 'min(960px, 100%)';
+      const defaultMonth = new Date().toISOString().slice(0, 7);
 
       show('Estadísticas de Proyectos y Equipo', `
-        <div style="display:flex; justify-content:flex-end; gap:10px; margin-bottom:12px; flex-wrap:wrap;">
-          <button id="btnExportPdf" onclick="exportCharts('pdf')">📕 Descargar PDF</button>
-          <button id="btnExportDocx" class="secondary" onclick="exportCharts('docx')">📄 Descargar Word</button>
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:14px; flex-wrap:wrap; background:#f8fafd; padding:12px; border-radius:12px; border:1px solid #e3eaf5;">
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <label for="chartMonthFilter" style="margin:0; font-size:13px;">Período:</label>
+            <input type="month" id="chartMonthFilter" value="${defaultMonth}" onchange="renderChartsForPeriod()" style="width:auto; padding:7px 10px;">
+            <button type="button" class="secondary" onclick="document.getElementById('chartMonthFilter').value=''; renderChartsForPeriod();" style="padding:7px 11px; font-size:12px;">Ver todo</button>
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <button id="btnExportPdf" onclick="exportCharts('pdf')">📕 Descargar PDF</button>
+            <button id="btnExportDocx" class="secondary" onclick="exportCharts('docx')">📄 Descargar Word</button>
+          </div>
         </div>
+        <p id="chartPeriodSummary" class="muted" style="margin:0 0 12px; font-weight:600;"></p>
         <div class="charts-grid">
           <div class="chart-box">
-            <h3>Tareas activas por estado</h3>
+            <h3>Tareas por estado</h3>
             <canvas id="chartStates"></canvas>
           </div>
           <div class="chart-box">
-            <h3>Tareas asignadas por responsable</h3>
+            <h3>Tareas por responsable</h3>
             <canvas id="chartPeople"></canvas>
           </div>
           <div class="chart-box">
-            <h3>Producción por tipo de soporte</h3>
+            <h3>Producción por soporte</h3>
             <canvas id="chartSupports"></canvas>
           </div>
           <div class="chart-box">
@@ -666,10 +696,32 @@
         </div>
       `);
 
-      const activeProjects = new Set(D.projects.filter(p => !p.archived).map(p => p.id));
-      const activeTasks = D.tasks.filter(t => activeProjects.has(t.projectId));
+      renderChartsForPeriod();
+    }
 
-      const stateCounts = D.states.map(st => activeTasks.filter(t => t.status === st).length);
+    function renderChartsForPeriod() {
+      chartInstances.forEach(c => c.destroy());
+      chartInstances = [];
+
+      const ym = document.getElementById('chartMonthFilter').value;
+      const periodText = formatMonthLabel(ym);
+
+      const filteredTasks = D.tasks.filter(t => {
+        if (!ym) return D.projects.some(p => p.id === t.projectId && !p.archived);
+        return (t.due && t.due.startsWith(ym)) || (t.start && t.start.startsWith(ym));
+      });
+
+      const taskIds = new Set(filteredTasks.map(t => t.id));
+      const filteredPubs = D.publications.filter(u => {
+        if (!ym) return taskIds.has(u.taskId);
+        return u.date && u.date.startsWith(ym);
+      });
+
+      document.getElementById('chartPeriodSummary').textContent =
+        `Mostrando: ${periodText} · ${filteredTasks.length} tareas y ${filteredPubs.length} publicaciones`;
+
+      // 1. Estados
+      const stateCounts = D.states.map(st => filteredTasks.filter(t => t.status === st).length);
       chartInstances.push(new Chart(document.getElementById('chartStates'), {
         type: 'doughnut',
         data: {
@@ -679,10 +731,11 @@
         options: { responsive: true, plugins: { legend: { position: 'bottom' } } }
       }));
 
+      // 2. Responsables
       const peopleNames = D.people.map(p => p.name.split(' ')[0]);
       const peopleEmails = D.people.map(p => p.email);
-      const inProgressByPerson = peopleEmails.map(em => activeTasks.filter(t => t.email === em && t.status !== 'Finalizada').length);
-      const doneByPerson = peopleEmails.map(em => activeTasks.filter(t => t.email === em && t.status === 'Finalizada').length);
+      const inProgressByPerson = peopleEmails.map(em => filteredTasks.filter(t => t.email === em && t.status !== 'Finalizada').length);
+      const doneByPerson = peopleEmails.map(em => filteredTasks.filter(t => t.email === em && t.status === 'Finalizada').length);
 
       chartInstances.push(new Chart(document.getElementById('chartPeople'), {
         type: 'bar',
@@ -700,14 +753,15 @@
         }
       }));
 
-      const usedSupports = D.supports.filter(sp => activeTasks.some(t => t.support === sp));
-      const supportCounts = usedSupports.map(sp => activeTasks.filter(t => t.support === sp).length);
+      // 3. Soportes
+      const usedSupports = D.supports.filter(sp => filteredTasks.some(t => t.support === sp));
+      const supportCounts = usedSupports.map(sp => filteredTasks.filter(t => t.support === sp).length);
 
       chartInstances.push(new Chart(document.getElementById('chartSupports'), {
         type: 'bar',
         data: {
-          labels: usedSupports,
-          datasets: [{ label: 'Cantidad', data: supportCounts, backgroundColor: '#183153' }]
+          labels: usedSupports.length ? usedSupports : ['Sin datos'],
+          datasets: [{ label: 'Cantidad', data: supportCounts.length ? supportCounts : [0], backgroundColor: '#183153' }]
         },
         options: {
           indexAxis: 'y',
@@ -717,10 +771,9 @@
         }
       }));
 
-      const activeTaskIds = new Set(activeTasks.map(t => t.id));
-      const activePubs = D.publications.filter(u => activeTaskIds.has(u.taskId));
-      const pubDone = activePubs.filter(u => u.published).length;
-      const pubPending = activePubs.length - pubDone;
+      // 4. Publicaciones
+      const pubDone = filteredPubs.filter(u => u.published).length;
+      const pubPending = filteredPubs.length - pubDone;
 
       chartInstances.push(new Chart(document.getElementById('chartPubs'), {
         type: 'pie',
@@ -739,10 +792,12 @@
       btn.textContent = 'Generando...';
 
       try {
+        const ym = document.getElementById('chartMonthFilter').value;
+        const periodLabel = formatMonthLabel(ym);
         const charts = [
-          { id: 'chartStates', title: 'Tareas activas por estado' },
-          { id: 'chartPeople', title: 'Tareas asignadas por responsable' },
-          { id: 'chartSupports', title: 'Producción por tipo de soporte' },
+          { id: 'chartStates', title: 'Tareas por estado' },
+          { id: 'chartPeople', title: 'Tareas por responsable' },
+          { id: 'chartSupports', title: 'Producción por soporte' },
           { id: 'chartPubs', title: 'Estado de publicaciones' }
         ];
 
@@ -754,7 +809,7 @@
         const res = await fetch('/api/exportCharts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ images, format })
+          body: JSON.stringify({ images, format, month: ym, periodLabel })
         });
         if (!res.ok) {
           const err = await res.json();
@@ -765,7 +820,7 @@
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `Estadisticas_Proyectos.${format}`;
+        a.download = `Estadisticas_${ym || 'Total'}.${format}`;
         document.body.appendChild(a);
         a.click();
         a.remove();

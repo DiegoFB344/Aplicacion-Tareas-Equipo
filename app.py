@@ -12,6 +12,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
+from PIL import Image, ImageDraw
 
 import matplotlib
 matplotlib.use('Agg')
@@ -25,7 +26,7 @@ from reportlab.lib.utils import ImageReader
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CLIENT_SECRET_PATH = os.path.join(BASE_DIR, 'client_secret_web.json')
 
-# CONFIGURACIÓN: Usa variables de entorno en la nube o reemplaza los valores por defecto
+# CONFIGURACIÓN: Variables de entorno en Render
 SPREADSHEET_ID = os.environ.get('SPREADSHEET_ID', '1j8yHiDL6fHpwCZTNXVEvQOr-R9oPlXsyueH2ZvmwqHM')
 TZ = ZoneInfo('America/Santiago')
 
@@ -37,7 +38,7 @@ app = Flask(
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'cambia-esta-clave-secreta-por-una-larga-2026')
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
-# Cookies seguras para HTTPS (Render / PythonAnywhere)
+# Cookies seguras para HTTPS (Render)
 is_local = os.environ.get('FLASK_ENV') == 'development'
 app.config.update(
     SESSION_COOKIE_SECURE=not is_local,
@@ -53,6 +54,11 @@ SHEETS = {
 ST = ['Pendiente', 'En proceso', 'En revisión', 'Finalizada']
 SP = ['Reel', 'Feed', 'Historia', 'Haka Ara TV', 'Presentación', 'Impresión', 'Web', 'Audiovisual', 'Comunicado', 'Story']
 
+MESES_ES = [
+    'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+    'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
+]
+
 SCOPES = [
     'https://www.googleapis.com/auth/spreadsheets',
     'https://www.googleapis.com/auth/calendar',
@@ -60,6 +66,19 @@ SCOPES = [
     'https://www.googleapis.com/auth/userinfo.email',
     'openid'
 ]
+
+def format_month_es(ym):
+    """Convierte '2026-11' en 'Noviembre 2026'."""
+    if not ym or len(ym) < 7 or '-' not in ym:
+        return 'Todos los meses (Acumulado)'
+    try:
+        year_str, month_str = ym[:7].split('-')
+        m_idx = int(month_str) - 1
+        if 0 <= m_idx < 12:
+            return f"{MESES_ES[m_idx]} {year_str}"
+    except Exception:
+        pass
+    return ym
 
 def create_oauth_flow(redirect_uri, state=None):
     """Soporta tanto archivo client_secret_web.json como variable de entorno GOOGLE_CLIENT_SECRET_JSON."""
@@ -99,25 +118,37 @@ def get_session_credentials():
             return None
     return creds
 
-def get_google_services():
-    creds = get_session_credentials()
-    if not creds:
-        raise PermissionError("AUTH_REQUIRED")
-    gc = gspread.authorize(creds)
-    sh = gc.open_by_key(SPREADSHEET_ID)
-    cal_service = build('calendar', 'v3', credentials=creds, cache_discovery=False)
-    drive_service = build('drive', 'v3', credentials=creds, cache_discovery=False)
-    oauth_service = build('oauth2', 'v2', credentials=creds, cache_discovery=False)
-    user_info = oauth_service.userinfo().get().execute()
-    user_email = user_info.get('email', 'Usuario')
-    return sh, cal_service, drive_service, user_email
-
 def all_rows(sh, sheet_name):
     ws = sh.worksheet(sheet_name)
     values = ws.get_all_values()
     if len(values) <= 1:
         return []
     return [{'v': row, 'row': i + 2} for i, row in enumerate(values[1:])]
+
+def get_google_services():
+    creds = get_session_credentials()
+    if not creds:
+        raise PermissionError("AUTH_REQUIRED")
+    gc = gspread.authorize(creds)
+    sh = gc.open_by_key(SPREADSHEET_ID)
+
+    oauth_service = build('oauth2', 'v2', credentials=creds, cache_discovery=False)
+    user_info = oauth_service.userinfo().get().execute()
+    user_email = str(user_info.get('email', '')).strip().lower()
+
+    # Validación contra la hoja 'Responsables' (columna B)
+    allowed = {
+        str(r['v'][1]).strip().lower()
+        for r in all_rows(sh, SHEETS['R'])
+        if len(r['v']) >= 2 and r['v'][1]
+    }
+    if user_email not in allowed:
+        session.clear()
+        raise PermissionError(f"Acceso denegado: {user_email} no pertenece al equipo autorizado.")
+
+    cal_service = build('calendar', 'v3', credentials=creds, cache_discovery=False)
+    drive_service = build('drive', 'v3', credentials=creds, cache_discovery=False)
+    return sh, cal_service, drive_service, user_email
 
 def normalize_date(v):
     s = str(v or '').strip()[:10]
@@ -229,9 +260,10 @@ def build_agenda_payload(sh):
 
     return {'projects': ps, 'tasks': ts, 'publications': pubs, 'people': people, 'supports': SP, 'states': ST}
 
+# --- RUTAS PWA ---
+
 @app.route('/static/icon-512.png')
 def pwa_icon():
-    from PIL import Image, ImageDraw
     icon_file = os.path.join(BASE_DIR, 'static', 'icon-512.png')
     if os.path.exists(icon_file):
         return send_file(icon_file, mimetype='image/png')
@@ -251,7 +283,6 @@ def pwa_icon():
     img.save(buf, format='PNG')
     buf.seek(0)
     return send_file(buf, mimetype='image/png')
-# --- RUTAS PWA ---
 
 @app.route('/sw.js')
 def service_worker():
@@ -269,9 +300,10 @@ def auth_status():
     if not creds:
         return jsonify({'authenticated': False})
     try:
-        oauth_service = build('oauth2', 'v2', credentials=creds, cache_discovery=False)
-        info = oauth_service.userinfo().get().execute()
-        return jsonify({'authenticated': True, 'email': info.get('email', '')})
+        _, _, _, email = get_google_services()
+        return jsonify({'authenticated': True, 'email': email})
+    except PermissionError as pe:
+        return jsonify({'authenticated': False, 'error': str(pe)})
     except Exception:
         return jsonify({'authenticated': False})
 
@@ -307,7 +339,7 @@ def logout():
     session.clear()
     return jsonify({'authenticated': False})
 
-# --- EXPORTACIÓN DE GRÁFICOS (DESCARGA DIRECTA NAVEGADOR / APK) ---
+# --- EXPORTACIÓN DE GRÁFICOS CON FILTRO MENSUAL ---
 
 @app.route('/api/exportCharts', methods=['POST'])
 def export_charts():
@@ -315,6 +347,10 @@ def export_charts():
         data = request.get_json(silent=True) or {}
         images = data.get('images', [])
         fmt = str(data.get('format', 'pdf')).lower()
+        month_raw = str(data.get('month', '') or '').strip()[:7]
+        period_label = str(data.get('periodLabel') or format_month_es(month_raw))
+        month_tag = month_raw if month_raw else 'Total'
+
         if not images:
             raise ValueError('No se recibieron gráficos para exportar')
 
@@ -324,7 +360,7 @@ def export_charts():
         buf = io.BytesIO()
 
         if fmt == 'pdf':
-            filename = f"Estadisticas_Proyectos_{now}.pdf"
+            filename = f"Estadisticas_{month_tag}_{now}.pdf"
             mimetype = 'application/pdf'
             c = canvas.Canvas(buf, pagesize=letter)
             width, height = letter
@@ -335,7 +371,7 @@ def export_charts():
 
             c.setFont("Helvetica", 10)
             c.setFillColorRGB(0.38, 0.44, 0.55)
-            c.drawString(45, height - 68, f"Generado: {now_readable}  |  Por: {user_email}")
+            c.drawString(45, height - 68, f"Período: {period_label}  |  Generado: {now_readable}  |  Por: {user_email}")
             c.line(45, height - 78, width - 45, height - 78)
 
             y_pos = height - 105
@@ -364,11 +400,11 @@ def export_charts():
 
             c.save()
         else:
-            filename = f"Estadisticas_Proyectos_{now}.docx"
+            filename = f"Estadisticas_{month_tag}_{now}.docx"
             mimetype = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
             doc = Document()
             doc.add_heading('REPORTE ESTADÍSTICO DE PROYECTOS', 0)
-            doc.add_paragraph(f"Generado: {now_readable} | Por: {user_email}")
+            doc.add_paragraph(f"Período: {period_label} | Generado: {now_readable} | Por: {user_email}")
 
             for img in images:
                 doc.add_heading(img.get('title', 'Gráfico'), level=2)
@@ -379,45 +415,71 @@ def export_charts():
             doc.save(buf)
 
         buf.seek(0)
-        log_action(sh, f'Exportar gráficos {fmt.upper()}', '', filename, user_email)
+        log_action(sh, f'Exportar gráficos {fmt.upper()}', month_tag, filename, user_email)
         return send_file(buf, as_attachment=True, download_name=filename, mimetype=mimetype)
     except Exception as e:
         return jsonify({'error': str(e)}), 400
+
+# --- INFORME WORD MENSUAL O ACUMULADO DE ARCHIVADOS ---
 
 @app.route('/api/downloadArchivedReport', methods=['GET'])
 def download_archived_report():
     try:
         sh, _, _, user_email = get_google_services()
-        projects = [x for x in all_rows(sh, SHEETS['P']) if len(x['v']) > 6 and str(x['v'][6]).upper() == 'TRUE']
-        if not projects:
-            return jsonify({'error': 'No hay proyectos archivados'}), 400
+        ym = str(request.args.get('month', '') or '').strip()[:7]
 
-        tasks = all_rows(sh, SHEETS['T'])
-        pubs = all_rows(sh, SHEETS['U'])
+        all_projects = all_rows(sh, SHEETS['P'])
+        all_tasks = all_rows(sh, SHEETS['T'])
+        all_pubs = all_rows(sh, SHEETS['U'])
         now = datetime.now(TZ).strftime('%d-%m-%Y_%H-%M')
         now_readable = datetime.now(TZ).strftime('%d-%m-%Y %H:%M')
 
-        archived_ids = {str(p['v'][0]) for p in projects}
-        archived_tasks = [t for t in tasks if str(t['v'][1]) in archived_ids]
+        if ym:
+            # Modo mensual: incluye todas las tareas (activas o archivadas) con inicio o vencimiento en ese mes
+            period_label = format_month_es(ym)
+            selected_tasks = [
+                t for t in all_tasks
+                if (len(t['v']) > 8 and fmt_date(t['v'][8]).startswith(ym))
+                or (len(t['v']) > 7 and fmt_date(t['v'][7]).startswith(ym))
+            ]
+            if not selected_tasks:
+                return jsonify({'error': f'No hay tareas registradas en {period_label}'}), 400
+
+            project_ids_in_month = {str(t['v'][1]) for t in selected_tasks}
+            selected_projects = [p for p in all_projects if str(p['v'][0]) in project_ids_in_month]
+            doc_title = f"INFORME MENSUAL DE GESTIÓN - {period_label.upper()}"
+            subtitle = f"Período: {period_label} | Proyectos involucrados: {len(selected_projects)} | Tareas: {len(selected_tasks)} | Generado: {now_readable} | Por: {user_email}"
+            filename = f"Informe_Mensual_{ym}_{now}.docx"
+        else:
+            # Modo acumulado: todos los proyectos archivados
+            selected_projects = [x for x in all_projects if len(x['v']) > 6 and str(x['v'][6]).upper() == 'TRUE']
+            if not selected_projects:
+                return jsonify({'error': 'No hay proyectos archivados'}), 400
+
+            archived_ids = {str(p['v'][0]) for p in selected_projects}
+            selected_tasks = [t for t in all_tasks if str(t['v'][1]) in archived_ids]
+            doc_title = 'INFORME DE PROYECTOS FINALIZADOS'
+            subtitle = f"Generado: {now_readable} | Proyectos archivados: {len(selected_projects)} | Total tareas: {len(selected_tasks)} | Por: {user_email}"
+            filename = f"Informe_Proyectos_Finalizados_{now}.docx"
 
         doc = Document()
-        doc.add_heading('INFORME DE PROYECTOS FINALIZADOS', 0)
-        doc.add_paragraph(f"Generado: {now_readable} | Proyectos archivados: {len(projects)} | Total tareas: {len(archived_tasks)} | Por: {user_email}")
+        doc.add_heading(doc_title, 0)
+        doc.add_paragraph(subtitle)
 
-        if archived_tasks:
+        if selected_tasks:
             fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4.2))
             fig.patch.set_facecolor('white')
 
             resp_counts = {}
-            for t in archived_tasks:
+            for t in selected_tasks:
                 name = str(t['v'][5] or 'Sin asignar').split(' ')[0]
                 resp_counts[name] = resp_counts.get(name, 0) + 1
             ax1.bar(resp_counts.keys(), resp_counts.values(), color='#365ccf')
-            ax1.set_title('Tareas finalizadas por responsable', fontsize=11, fontweight='bold', color='#183153')
+            ax1.set_title('Tareas por responsable', fontsize=11, fontweight='bold', color='#183153')
             ax1.yaxis.get_major_locator().set_params(integer=True)
 
             supp_counts = {}
-            for t in archived_tasks:
+            for t in selected_tasks:
                 sp = str(t['v'][3] or 'Otro')
                 supp_counts[sp] = supp_counts.get(sp, 0) + 1
             ax2.barh(list(supp_counts.keys()), list(supp_counts.values()), color='#22a06b')
@@ -433,14 +495,15 @@ def download_archived_report():
             doc.add_heading('Resumen Estadístico', level=1)
             doc.add_picture(img_buffer, width=Inches(6.2))
 
-        doc.add_heading('Detalle de Proyectos', level=1)
-        for p in projects:
+        doc.add_heading('Detalle de Proyectos y Tareas', level=1)
+        for p in selected_projects:
             doc.add_heading(str(p['v'][1]), level=2)
-            doc.add_paragraph(f"Prioridad: {p['v'][3]} | Fecha de archivo: {fmt_date(p['v'][7])}")
+            status_proj = f"Archivado el {fmt_date(p['v'][7])}" if (len(p['v']) > 6 and str(p['v'][6]).upper() == 'TRUE') else "Activo"
+            doc.add_paragraph(f"Prioridad: {p['v'][3]} | Estado proyecto: {status_proj}")
             if p['v'][2]:
                 doc.add_paragraph(f"Descripción: {p['v'][2]}")
 
-            own = [t for t in archived_tasks if str(t['v'][1]) == str(p['v'][0])]
+            own = [t for t in selected_tasks if str(t['v'][1]) == str(p['v'][0])]
             for t in own:
                 p_task = doc.add_paragraph(style='List Bullet')
                 p_task.add_run(f"{t['v'][2]} ").bold = True
@@ -448,7 +511,7 @@ def download_archived_report():
                 doc.add_paragraph(f"Inicio: {fmt_date(t['v'][7])} | Entrega: {fmt_date(t['v'][8])} | Estado: {t['v'][9]}")
                 if t['v'][4]:
                     doc.add_paragraph(f"Texto: {t['v'][4]}")
-                tp = [u for u in pubs if str(u['v'][1]) == str(t['v'][0])]
+                tp = [u for u in all_pubs if str(u['v'][1]) == str(t['v'][0]) and (not ym or fmt_date(u['v'][2]).startswith(ym))]
                 if tp:
                     pub_txt = '; '.join(f"{fmt_date(u['v'][2])} ({'Publicado' if str(u['v'][3]).upper()=='TRUE' else 'No publicado'})" for u in tp)
                     doc.add_paragraph(f"Publicaciones: {pub_txt}")
@@ -456,8 +519,7 @@ def download_archived_report():
         buf = io.BytesIO()
         doc.save(buf)
         buf.seek(0)
-        filename = f"Informe_Proyectos_Finalizados_{now}.docx"
-        log_action(sh, 'Generar informe Word', '', filename, user_email)
+        log_action(sh, 'Generar informe Word', ym or 'Archivados', filename, user_email)
         return send_file(buf, as_attachment=True, download_name=filename, mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
     except Exception as e:
         return jsonify({'error': str(e)}), 400
@@ -642,10 +704,21 @@ def api_handler(action):
             log_action(sh, 'Restaurar proyecto', pid, str(p['v'][1]), user_email)
 
         elif action == 'generarInformeFinalizadosV7':
-            projects = [x for x in all_rows(sh, SHEETS['P']) if len(x['v']) > 6 and str(x['v'][6]).upper() == 'TRUE']
-            if not projects:
-                raise ValueError('Todavía no hay proyectos archivados para informar')
-            return jsonify({'downloadUrl': '/api/downloadArchivedReport', 'count': len(projects)})
+            ym = str(args[0]).strip()[:7] if args else ''
+            if ym:
+                tasks = [
+                    t for t in all_rows(sh, SHEETS['T'])
+                    if (len(t['v']) > 8 and fmt_date(t['v'][8]).startswith(ym))
+                    or (len(t['v']) > 7 and fmt_date(t['v'][7]).startswith(ym))
+                ]
+                if not tasks:
+                    raise ValueError(f'No hay tareas registradas en {format_month_es(ym)}')
+                return jsonify({'downloadUrl': f'/api/downloadArchivedReport?month={ym}', 'count': len(tasks)})
+            else:
+                projects = [x for x in all_rows(sh, SHEETS['P']) if len(x['v']) > 6 and str(x['v'][6]).upper() == 'TRUE']
+                if not projects:
+                    raise ValueError('Todavía no hay proyectos archivados para informar')
+                return jsonify({'downloadUrl': '/api/downloadArchivedReport', 'count': len(projects)})
 
         return jsonify(build_agenda_payload(sh))
 
