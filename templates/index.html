@@ -53,7 +53,14 @@
     .toast{position:fixed;bottom:20px;right:20px;background:#183153;color:white;padding:13px 18px;border-radius:10px;display:none;z-index:30}
     .empty{padding:40px;text-align:center;color:#7b8ba0}
     .archiveitem{padding:12px;border-bottom:1px solid #e7ebf1}
-    .projectrow td{background:#e9eef7;font-weight:bold}
+
+    /* Fila de proyecto desplegable (Acordeón) */
+    .projectrow td{background:#e9eef7;font-weight:bold;cursor:pointer;user-select:none;transition:background .15s ease}
+    .projectrow:hover td{background:#dfe6f3}
+    .toggle-icon{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:6px;background:white;color:#365ccf;font-size:11px;margin-right:6px;transition:transform .15s ease;box-shadow:0 1px 3px #1831531a}
+    .toggle-icon.closed{transform:rotate(-90deg)}
+    .task-summary{font-size:12px;font-weight:600;color:#4f6280;background:#dce4f2;padding:4px 9px;border-radius:12px;margin-left:6px}
+
     .link{background:none;color:#365ccf;padding:3px 6px}
     .danger{color:#b12727}
     .pill{font-size:11px;padding:4px 7px;border-radius:6px;background:#eef2f8}
@@ -176,6 +183,7 @@
         <option>En revisión</option>
         <option>Finalizada</option>
       </select>
+      <button type="button" class="secondary" id="btnToggleAll" onclick="toggleAllProjects()">Expandir todos</button>
     </div>
 
     <div class="panel tablewrap" id="tableWrap">
@@ -217,6 +225,8 @@
     let busy = false;
     let loginAbortController = null;
     let chartInstances = [];
+    let collapsedProjects = new Set();
+    let initialCollapseApplied = false;
 
     const SYNC_LABELS = {
       getAgenda: 'Cargando datos de Google Sheets...',
@@ -231,6 +241,26 @@
       generarInformeFinalizadosV7: 'Generando informe Word con gráficos...',
       probarCalendarV5: 'Verificando conexión...'
     };
+
+    function toggleProject(id, e) {
+      if (e && e.target.closest('button')) return;
+      if (collapsedProjects.has(id)) {
+        collapsedProjects.delete(id);
+      } else {
+        collapsedProjects.add(id);
+      }
+      render();
+    }
+
+    function toggleAllProjects() {
+      const activeIds = D.projects.filter(p => !p.archived).map(p => p.id);
+      if (collapsedProjects.size < activeIds.length) {
+        activeIds.forEach(id => collapsedProjects.add(id));
+      } else {
+        collapsedProjects.clear();
+      }
+      render();
+    }
 
     function setSyncState(active, fn = '') {
       busy = active;
@@ -274,6 +304,10 @@
         if (data.cancelled) return;
         if (data.projects) {
           D = data;
+          if (!initialCollapseApplied) {
+            D.projects.filter(p => !p.archived).forEach(p => collapsedProjects.add(p.id));
+            initialCollapseApplied = true;
+          }
           render();
         }
         if (ok) ok(data);
@@ -382,55 +416,72 @@
       const q = document.getElementById('search').value.toLowerCase();
       const f = document.getElementById('filter').value;
 
-      document.getElementById('nProjects').textContent = D.projects.filter(p => !p.archived).length;
-      document.getElementById('nPending').textContent = D.tasks.filter(t => t.status === 'Pendiente' && D.projects.some(p => p.id === t.projectId && !p.archived)).length;
-      document.getElementById('nProgress').textContent = D.tasks.filter(t => ['En proceso', 'En revisión'].includes(t.status) && D.projects.some(p => p.id === t.projectId && !p.archived)).length;
-      document.getElementById('nDone').textContent = D.tasks.filter(t => t.status === 'Finalizada' && D.projects.some(p => p.id === t.projectId && !p.archived)).length;
+      const activeProjectsList = D.projects.filter(p => !p.archived);
+      document.getElementById('nProjects').textContent = activeProjectsList.length;
+      document.getElementById('nPending').textContent = D.tasks.filter(t => t.status === 'Pendiente' && activeProjectsList.some(p => p.id === t.projectId)).length;
+      document.getElementById('nProgress').textContent = D.tasks.filter(t => ['En proceso', 'En revisión'].includes(t.status) && activeProjectsList.some(p => p.id === t.projectId)).length;
+      document.getElementById('nDone').textContent = D.tasks.filter(t => t.status === 'Finalizada' && activeProjectsList.some(p => p.id === t.projectId)).length;
+
+      const btnAll = document.getElementById('btnToggleAll');
+      if (btnAll) {
+        btnAll.textContent = collapsedProjects.size >= activeProjectsList.length && activeProjectsList.length
+          ? 'Expandir todos'
+          : 'Contraer todos';
+      }
 
       let html = '';
-      D.projects.filter(p => !p.archived).forEach(p => {
-        const tasks = D.tasks.filter(t => t.projectId === p.id && (!f || t.status === f) && [p.name, t.title, t.support, t.assignee].some(x => x.toLowerCase().includes(q)));
+      activeProjectsList.forEach(p => {
+        const allProjectTasks = D.tasks.filter(t => t.projectId === p.id);
+        const tasks = allProjectTasks.filter(t => (!f || t.status === f) && [p.name, t.title, t.support, t.assignee].some(x => x.toLowerCase().includes(q)));
         if (!tasks.length && q) return;
         if (!tasks.length && f) return;
 
-        const canArchive = D.tasks.some(t => t.projectId === p.id) && D.tasks.filter(t => t.projectId === p.id).every(t => t.status === 'Finalizada');
-        html += `<tr class="projectrow">
+        const isCollapsed = collapsedProjects.has(p.id) && !q && !f;
+        const doneCount = allProjectTasks.filter(t => t.status === 'Finalizada').length;
+        const canArchive = allProjectTasks.length > 0 && doneCount === allProjectTasks.length;
+
+        html += `<tr class="projectrow" onclick="toggleProject('${p.id}', event)">
           <td colspan="9">
-            ${esc(p.name)} <span class="pill">${esc(p.priority)}</span>
+            <span class="toggle-icon ${isCollapsed ? 'closed' : ''}">▼</span>
+            <span>${esc(p.name)}</span>
+            <span class="pill">${esc(p.priority)}</span>
+            <span class="task-summary">${doneCount}/${allProjectTasks.length} finalizadas</span>
             <button class="link" onclick="openProject('${p.id}')">Editar proyecto</button>
             ${canArchive ? `<button class="secondary" onclick="archiveProject('${p.id}')">Finalizado · Archivar</button>` : ''}
           </td>
           <td><button class="secondary" onclick="openTask(null,'${p.id}')">+ Tarea</button></td>
         </tr>`;
 
-        tasks.forEach(t => {
-          const pubs = D.publications.filter(x => x.taskId === t.id).sort((a, b) => a.date.localeCompare(b.date));
-          html += `<tr class="priority-${esc(p.priority)}">
-            <td>${esc(p.name)}</td>
-            <td><b>${esc(t.title)}</b></td>
-            <td>${esc(t.support)}</td>
-            <td>${esc(t.assignee)}<small>${esc(t.email)}</small></td>
-            <td>${esc(t.due)}</td>
-            <td>${esc(p.priority)}</td>
-            <td>
-              <span class="tag">${esc(t.status)}</span>
-              <div class="progress"><div class="bar" style="width:${t.progress}%"></div></div>
-              <small>${t.progress}%</small>
-              <div>
-                <button class="secondary step" ${t.status === 'Pendiente' ? 'disabled' : ''} onclick="shift('${t.id}',-1)">‹</button>
-                <button class="secondary step" ${t.status === 'Finalizada' ? 'disabled' : ''} onclick="shift('${t.id}',1)">›</button>
-              </div>
-            </td>
-            <td>
-              ${pubs.map(x => `<div class="pub">${esc(x.date)} <button class="secondary" onclick="editPublication('${x.id}')">Editar</button></div>`).join('') || '<span class="muted">Sin fechas</span>'}
-              <button class="secondary" onclick="openPublication('${t.id}')">+ Fecha</button>
-            </td>
-            <td>
-              ${pubs.length ? pubs.map(x => `<div class="pub"><input type="checkbox" ${x.published ? 'checked' : ''} onchange="published('${x.id}',this.checked)"><span>${esc(x.date)}</span></div>`).join('') : '—'}
-            </td>
-            <td><button class="secondary" onclick="openTask('${t.id}')">Editar</button></td>
-          </tr>`;
-        });
+        if (!isCollapsed) {
+          tasks.forEach(t => {
+            const pubs = D.publications.filter(x => x.taskId === t.id).sort((a, b) => a.date.localeCompare(b.date));
+            html += `<tr class="priority-${esc(p.priority)}">
+              <td>${esc(p.name)}</td>
+              <td><b>${esc(t.title)}</b></td>
+              <td>${esc(t.support)}</td>
+              <td>${esc(t.assignee)}<small>${esc(t.email)}</small></td>
+              <td>${esc(t.due)}</td>
+              <td>${esc(p.priority)}</td>
+              <td>
+                <span class="tag">${esc(t.status)}</span>
+                <div class="progress"><div class="bar" style="width:${t.progress}%"></div></div>
+                <small>${t.progress}%</small>
+                <div>
+                  <button class="secondary step" ${t.status === 'Pendiente' ? 'disabled' : ''} onclick="shift('${t.id}',-1)">‹</button>
+                  <button class="secondary step" ${t.status === 'Finalizada' ? 'disabled' : ''} onclick="shift('${t.id}',1)">›</button>
+                </div>
+              </td>
+              <td>
+                ${pubs.map(x => `<div class="pub">${esc(x.date)} <button class="secondary" onclick="editPublication('${x.id}')">Editar</button></div>`).join('') || '<span class="muted">Sin fechas</span>'}
+                <button class="secondary" onclick="openPublication('${t.id}')">+ Fecha</button>
+              </td>
+              <td>
+                ${pubs.length ? pubs.map(x => `<div class="pub"><input type="checkbox" ${x.published ? 'checked' : ''} onchange="published('${x.id}',this.checked)"><span>${esc(x.date)}</span></div>`).join('') : '—'}
+              </td>
+              <td><button class="secondary" onclick="openTask('${t.id}')">Editar</button></td>
+            </tr>`;
+          });
+        }
       });
 
       document.getElementById('body').innerHTML = html || '<tr><td colspan="10" class="empty">Sin proyectos o tareas para mostrar</td></tr>';
@@ -477,6 +528,8 @@
         notify('Primero crea un proyecto');
         return;
       }
+      collapsedProjects.delete(pId);
+
       show(id ? 'Editar tarea' : 'Nueva tarea', `
         <div class="grid">
           <div><label>Proyecto</label><select id="tProject">${opt(D.projects, pId, 'id')}</select></div>
@@ -492,9 +545,11 @@
     }
 
     function saveTaskUI(id) {
+      const pId = value('tProject');
+      collapsedProjects.delete(pId);
       call('saveTask', [{
         id,
-        projectId: value('tProject'),
+        projectId: pId,
         title: value('tTitle'),
         support: value('tSupport'),
         email: value('tEmail'),
